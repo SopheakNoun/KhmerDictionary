@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>វចនានុក្រមខ្មែរ</title>
+<style>
+	@font-face{
+		font-family:"KhmerMuol";
+		src:url("fonts/KhmerOS_muollight.ttf") format("truetype");
+		font-display:swap;
+	}
+	@font-face{
+		font-family:"KhmerSiemreap";
+		src:url("fonts/KhmerOSSiemreap.ttf") format("truetype");
+		font-display:swap;
+	}
+	:root{
+		--bg:#f4f1ea;
+		--surface:#ffffff;
+		--ink:#2b2620;
+		--muted:#7a7267;
+		--line:#e2ddd2;
+		--accent:#8a1f1f;
+		--accent-soft:#f3e4e4;
+		--gold:#b8892b;
+		--shadow:0 1px 3px rgba(0,0,0,.08),0 8px 24px rgba(0,0,0,.06);
+	}
+	@media (prefers-color-scheme:dark){
+		:root:not([data-theme="light"]){
+			--bg:#17140f;--surface:#211d16;--ink:#ece5d8;--muted:#9c9284;
+			--line:#332d23;--accent:#e07a7a;--accent-soft:#2a1c1c;--gold:#d9b25a;
+			--shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+		}
+	}
+	:root[data-theme="dark"]{
+		--bg:#17140f;--surface:#211d16;--ink:#ece5d8;--muted:#9c9284;
+		--line:#332d23;--accent:#e07a7a;--accent-soft:#2a1c1c;--gold:#d9b25a;
+		--shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+	}
+	*{box-sizing:border-box}
+	html,body{margin:0;height:100%}
+	body{
+		background:var(--bg);color:var(--ink);
+		font-family:"KhmerSiemreap","Khmer OS Siemreap","Noto Sans Khmer",system-ui,sans-serif;
+		line-height:1.7;display:flex;flex-direction:column;min-height:100%;
+	}
+	header{
+		background:var(--accent);color:#fff;padding:14px 16px;position:sticky;top:0;z-index:20;
+		box-shadow:0 2px 10px rgba(0,0,0,.15);
+	}
+	.bar{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:12px}
+	.brand{font-family:"KhmerMuol";font-size:19px;white-space:nowrap;letter-spacing:.5px}
+	.searchwrap{flex:1;position:relative}
+	#q{
+		width:100%;padding:11px 40px 11px 14px;border:0;border-radius:10px;font-size:17px;
+		font-family:inherit;background:rgba(255,255,255,.95);color:#2b2620;outline:none;
+	}
+	#q::placeholder{color:#9a9186}
+	.clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:none;
+		font-size:20px;color:#9a9186;cursor:pointer;padding:4px;line-height:1;display:none}
+	.iconbtn{border:0;background:rgba(255,255,255,.15);color:#fff;width:38px;height:38px;
+		border-radius:9px;cursor:pointer;font-size:17px;flex:none}
+	.iconbtn:hover{background:rgba(255,255,255,.28)}
+	.iconbtn.listening{background:#fff;color:var(--accent);animation:pulse 1s ease-in-out infinite}
+	#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:60;max-width:90vw;
+		background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;
+		box-shadow:var(--shadow);padding:10px 16px;font-size:14px;display:none}
+	main{flex:1;max-width:900px;width:100%;margin:0 auto;padding:16px;display:grid;
+		grid-template-columns:minmax(240px,320px) 1fr;gap:16px}
+	@media (max-width:760px){
+		main{grid-template-columns:1fr;padding:12px}
+		.detailcol{order:-1}
+	}
+	.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+		box-shadow:var(--shadow);overflow:hidden}
+	.panel h2{margin:0;padding:12px 16px;font-size:13px;letter-spacing:1px;text-transform:uppercase;
+		color:var(--muted);border-bottom:1px solid var(--line);font-family:system-ui,sans-serif;font-weight:700}
+	.alpha{display:flex;flex-wrap:wrap;gap:6px;padding:12px}
+	.alpha button{font-family:"KhmerSiemreap",sans-serif;font-size:19px;min-width:40px;height:40px;
+		border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px;cursor:pointer;padding:0 4px}
+	.alpha button:hover{border-color:var(--accent);color:var(--accent)}
+	.alpha button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+	#resultmeta{padding:10px 16px;color:var(--muted);font-size:13px;border-bottom:1px solid var(--line);
+		font-family:system-ui,sans-serif;display:flex;justify-content:space-between;align-items:center}
+	#results{list-style:none;margin:0;padding:0;max-height:calc(100vh - 260px);overflow:auto}
+	#results li{padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;
+		justify-content:space-between;align-items:baseline;gap:10px}
+	#results li:hover{background:var(--accent-soft)}
+	#results li.on{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+	#results .w{font-size:20px}
+	#results .p{font-size:12px;color:var(--muted);font-family:system-ui,sans-serif;flex:none}
+	.detailcol{min-height:200px}
+	#detail{padding:22px}
+	.headword{font-family:"KhmerMuol";font-size:34px;color:var(--accent);line-height:1.4;margin:0 0 2px}
+	.hw-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+	.speak{border:0;background:var(--accent);color:#fff;width:44px;height:44px;border-radius:50%;
+		cursor:pointer;font-size:20px;display:grid;place-items:center;flex:none;box-shadow:var(--shadow)}
+	.speak:hover{filter:brightness(1.08)}
+	.speak:disabled{background:var(--line);color:var(--muted);cursor:not-allowed;box-shadow:none}
+	.speak.playing{animation:pulse 1s ease-in-out infinite}
+	@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
+	.hw-sub{color:var(--muted);font-size:14px;font-family:system-ui,sans-serif;margin-bottom:18px}
+	.sense{padding:14px 0;border-top:1px solid var(--line)}
+	.sense:first-of-type{border-top:0}
+	.sense-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+	.num{background:var(--accent);color:#fff;width:26px;height:26px;border-radius:50%;
+		display:grid;place-items:center;font-size:13px;font-family:system-ui,sans-serif;flex:none}
+	.pos{background:var(--accent-soft);color:var(--accent);padding:2px 10px;border-radius:20px;
+		font-size:13px;white-space:nowrap}
+	.def{font-size:18px;margin:2px 0 0}
+	.examples{margin-top:10px;padding:10px 14px;background:var(--bg);border-radius:10px;border-left:3px solid var(--gold)}
+	.examples .lbl{font-size:12px;color:var(--gold);font-family:system-ui,sans-serif;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+	.examples p{margin:4px 0;font-size:16px}
+	.empty{color:var(--muted);text-align:center;padding:50px 20px}
+	.empty .big{font-family:"KhmerMuol";font-size:26px;color:var(--line);margin-bottom:10px}
+	.loading{text-align:center;padding:60px 20px;color:var(--muted)}
+	.spinner{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);
+		border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 14px}
+	@keyframes spin{to{transform:rotate(360deg)}}
+	.filepick{max-width:520px;margin:40px auto;text-align:center;padding:30px}
+	.filepick input{margin-top:14px}
+	footer{text-align:center;color:var(--muted);font-size:12px;padding:14px;font-family:system-ui,sans-serif}
+	.about{padding:22px;font-size:15px}
+	.about h3{font-family:"KhmerMuol";color:var(--accent)}
+	dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);
+		max-width:520px;box-shadow:var(--shadow);padding:0}
+	dialog::backdrop{background:rgba(0,0,0,.45)}
+	dialog .dhead{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+	dialog .about{border:0}
+	dialog button.close{border:0;background:none;font-size:22px;cursor:pointer;color:var(--muted)}
+	kbd{font-family:system-ui;background:var(--bg);border:1px solid var(--line);border-bottom-width:2px;
+		border-radius:5px;padding:1px 6px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+	<div class="bar">
+		<span class="brand">វចនានុក្រមខ្មែរ</span>
+		<div class="searchwrap">
+			<input id="q" type="search" autocomplete="off" placeholder="ស្វែងរកពាក្យ…" disabled>
+			<button class="clear" id="clear" title="សម្អាត">&times;</button>
+		</div>
+		<button class="iconbtn" id="micBtn" title="ស្វែងរកដោយសំឡេង">🎤</button>
+		<button class="iconbtn" id="sttBtn" title="ម៉ាស៊ីនស្ដាប់" style="display:none;font-size:13px">G</button>
+		<button class="iconbtn" id="voiceBtn" title="សំឡេង៖ ស្រី/ប្រុស">♀</button>
+		<button class="iconbtn" id="soundBtn" title="បិទ/បើកសំឡេង">🔊</button>
+		<button class="iconbtn" id="aboutBtn" title="អំពី">ⓘ</button>
+		<button class="iconbtn" id="themeBtn" title="ពន្លឺ/ងងឹត">◐</button>
+	</div>
+</header>
+
+<div id="toast"></div>
+<main>
+	<div>
+		<div class="panel" style="margin-bottom:16px">
+			<h2>អក្សរ</h2>
+			<div class="alpha" id="alpha"></div>
+		</div>
+		<div class="panel">
+			<div id="resultmeta"><span id="metaText">កំពុងផ្ទុក…</span></div>
+			<ul id="results"></ul>
+		</div>
+	</div>
+	<div class="detailcol">
+		<div class="panel">
+			<div id="detail">
+				<div class="loading" id="bootMsg">
+					<div class="spinner"></div>
+					<div>កំពុងផ្ទុកវចនានុក្រម…</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</main>
+
+<footer>វចនានុក្រមខ្មែរ · ចួន ណាត · ២២,២០៣ ពាក្យ · អានទិន្នន័យក្នុងកម្មវិធីរុករក</footer>
+
+<dialog id="aboutDlg">
+	<div class="dhead">
+		<strong style="font-family:KhmerMuol;color:var(--accent)">អំពីកម្មវិធី</strong>
+		<button class="close" data-close>&times;</button>
+	</div>
+	<div class="about">
+		<h3>វចនានុក្រមខ្មែរ</h3>
+		<p>កម្មវិធីរុករកវចនានុក្រមខ្មែរ សម្ដេចសង្ឃរាជ ជួន ណាត។ ទិន្នន័យមាន ២២,២០៣ ពាក្យ និង ២៤,២៨០ និយមន័យ។</p>
+		<p style="font-family:system-ui;font-size:13px;color:var(--muted)">
+			Web edition — reads the dictionary database (<code>dict.sqlite</code>) entirely in your browser via sql.js.
+			No data leaves this device. Dictionary content © its respective authors; app rebuilt from the
+			<code>com.optimiskh.chuonnathdictionary</code> data.
+		</p>
+		<p style="font-family:system-ui;font-size:13px;color:var(--muted)">
+			Tips: type to search · click a letter to browse · <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open.
+		</p>
+	</div>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.min.js"></script>
+<script>
+"use strict";
+// ---- Part-of-speech labels (Chuon Nath abbreviations) ----
+const POS = {
+	"ន":"នាម", "កិ":"កិរិយាសព្ទ", "គុ":"គុណនាម", "កិវិ":"កិរិយាវិសេសន៍",
+	"និ":"និបាតសព្ទ", "ឧ":"ឧទានសព្ទ", "ប":"បុព្វបទ", "សព្វ":"សព្វនាម",
+	"សំខ្យា":"សំខ្យា", "បសំ":"បច្ច័យសម្ព័ន្ធ", "អានិ":"អាការនិបាត", "បុ":"បុព្វបទ",
+	"វិស":"វិសេសនៈ", "កិនុ":"កិរិយានុគ្រោះ", "អាល":"អាលបនៈ", "សំខ្យានុ":"សំខ្យានុគ្រោះ",
+	"បូសំ":"បុព្វបទសម្ព័ន្ធ", "និស":"និបាតសព្ទ"
+};
+function posLabel(p){ if(!p) return ""; return POS[p] || p; }
+
+// ---- Khmer consonant browse set ----
+const CONSONANTS = ["ក","ខ","គ","ឃ","ង","ច","ឆ","ជ","ឈ","ញ","ដ","ឋ","ឌ","ឍ","ណ","ត","ថ","ទ","ធ","ន",
+	"ប","ផ","ព","ភ","ម","យ","រ","ល","វ","ស","ហ","ឡ","អ"];
+
+let db=null, activeId=null, mode={type:"letter",val:"ក"};
+let audioBackend=false;          // true when server.py /speak is available
+let currentAudio=null;
+let voice="sreymom";             // "sreymom" (female) | "piseth" (male)
+try{ const v=localStorage.getItem("kmdict-voice"); if(v) voice=v; }catch(e){}
+const $=s=>document.querySelector(s);
+const results=$("#results"), detail=$("#detail"), metaText=$("#metaText"),
+	qInput=$("#q"), clearBtn=$("#clear");
+
+// ---- DB loading: try fetch, fall back to file picker ----
+async function boot(){
+	try{
+		const SQL = await initSqlJs({locateFile: f => "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/"+f});
+		let buf;
+		try{
+			const r = await fetch("dict.sqlite");
+			if(!r.ok) throw new Error("http "+r.status);
+			buf = await r.arrayBuffer();
+		}catch(e){
+			return showFilePicker(SQL, "កម្មវិធីរុករកមិនអាចផ្ទុកឯកសារ dict.sqlite ដោយផ្ទាល់បានទេ (file://)។");
+		}
+		db = new SQL.Database(new Uint8Array(buf));
+		await probeAudio();
+		ready();
+	}catch(err){
+		detail.innerHTML = '<div class="empty"><div class="big">✕</div><div>ផ្ទុកមិនបាន៖ '+esc(err.message)+'</div></div>';
+	}
+}
+function showFilePicker(SQL,msg){
+	detail.innerHTML =
+		'<div class="filepick"><div class="empty big">📂</div><p>'+esc(msg)+'</p>'+
+		'<p style="font-family:system-ui;font-size:13px;color:var(--muted)">ជ្រើសរើសឯកសារ <code>dict.sqlite</code> ដើម្បីបន្ត។</p>'+
+		'<input type="file" id="dbfile" accept=".sqlite,.db"></div>';
+	$("#dbfile").addEventListener("change", async e=>{
+		const f=e.target.files[0]; if(!f) return;
+		detail.innerHTML='<div class="loading"><div class="spinner"></div><div>កំពុងផ្ទុក…</div></div>';
+		db = new SQL.Database(new Uint8Array(await f.arrayBuffer()));
+		await probeAudio();
+		ready();
+	});
+}
+
+function ready(){
+	buildAlpha();
+	qInput.disabled=false; qInput.focus();
+	browseLetter("ក");
+	emptyDetail();
+}
+
+// ---- query helpers ----
+function run(sql,params){
+	const st=db.prepare(sql); if(params) st.bind(params);
+	const rows=[]; while(st.step()) rows.push(st.getAsObject()); st.free(); return rows;
+}
+
+function buildAlpha(){
+	const box=$("#alpha");
+	CONSONANTS.forEach(c=>{
+		const b=document.createElement("button"); b.textContent=c;
+		b.onclick=()=>browseLetter(c);
+		box.appendChild(b);
+	});
+}
+function markAlpha(letter){
+	document.querySelectorAll("#alpha button").forEach(b=>b.classList.toggle("on", b.textContent===letter));
+}
+
+function browseLetter(letter){
+	mode={type:"letter",val:letter}; markAlpha(letter);
+	const rows=run(
+		"SELECT DISTINCT writtenForm FROM lexicalentry WHERE writtenForm LIKE $p AND writtenForm<>'' "+
+		"ORDER BY writtenForm LIMIT 800",{$p:letter+"%"});
+	metaText.textContent="អក្សរ "+letter+" · "+rows.length+" ពាក្យ"+(rows.length>=800?"+":"");
+	renderList(rows.map(r=>r.writtenForm));
+}
+
+function search(term){
+	term=term.trim();
+	if(!term){ markAlpha(mode.val); return browseLetter(mode.val||"ក"); }
+	markAlpha(null);
+	mode={type:"search",val:term};
+	// prefix matches first, then contains
+	const rows=run(
+		"SELECT writtenForm, MIN(CASE WHEN writtenForm=$t THEN 0 WHEN writtenForm LIKE $p THEN 1 ELSE 2 END) rank "+
+		"FROM lexicalentry WHERE writtenForm LIKE $c AND writtenForm<>'' "+
+		"GROUP BY writtenForm ORDER BY rank, writtenForm LIMIT 400",
+		{$t:term,$p:term+"%",$c:"%"+term+"%"});
+	metaText.textContent="លទ្ធផល «"+term+"» · "+rows.length+" ពាក្យ";
+	renderList(rows.map(r=>r.writtenForm));
+}
+
+function renderList(words){
+	results.innerHTML="";
+	if(!words.length){
+		results.innerHTML='<li style="cursor:default;color:var(--muted);justify-content:center">រកមិនឃើញ</li>';
+		return;
+	}
+	const frag=document.createDocumentFragment();
+	words.forEach(w=>{
+		const li=document.createElement("li"); li.dataset.w=w;
+		li.innerHTML='<span class="w">'+esc(w)+'</span>';
+		li.onclick=()=>{ selectWord(w,li); };
+		frag.appendChild(li);
+	});
+	results.appendChild(frag);
+}
+
+function selectWord(word,li){
+	document.querySelectorAll("#results li").forEach(x=>x.classList.remove("on"));
+	if(li) li.classList.add("on");
+	// all lexical entries (homographs) for this written form, each with its senses
+	const entries=run(
+		"SELECT le.id, le.writtenForm, le.partOfSpeech, le.pronunciation, "+
+		"s.id senseId, sy.id synId, sy.definition "+
+		"FROM lexicalentry le "+
+		"JOIN sense s ON s.lexicalEntryId=le.id "+
+		"JOIN synset sy ON sy.id=s.synsetid "+
+		"WHERE le.writtenForm=$w ORDER BY le.id",{$w:word});
+	renderDetail(word,entries);
+}
+
+function renderDetail(word,entries){
+	if(!entries.length){ emptyDetail(); return; }
+	const pron=entries.find(e=>e.pronunciation)?.pronunciation || "";
+	const hasAudio = audioBackend;
+	let html='<div class="hw-row"><h1 class="headword">'+esc(word)+'</h1>';
+	if(hasAudio){ html+='<button class="speak" id="speakBtn" title="ស្ដាប់ការបញ្ចេញសំឡេង">🔊</button>'; }
+	html+='</div>';
+	html+='<div class="hw-sub">'+(pron?"["+esc(pron)+"] · ":"")+entries.length+' និយមន័យ</div>';
+	entries.forEach((e,i)=>{
+		const exs=run("SELECT example FROM statement WHERE synsetId=$s AND example<>''",{$s:e.synId});
+		html+='<div class="sense"><div class="sense-head">'+
+			'<span class="num">'+(i+1)+'</span>'+
+			(e.partOfSpeech?'<span class="pos" title="'+esc(e.partOfSpeech)+'">'+esc(posLabel(e.partOfSpeech))+'</span>':'')+
+			'</div>';
+		html+='<p class="def">'+esc(e.definition||"")+'</p>';
+		if(exs.length){
+			html+='<div class="examples"><div class="lbl">ឧទាហរណ៍</div>'+
+				exs.map(x=>'<p>'+esc(x.example)+'</p>').join('')+'</div>';
+		}
+		html+='</div>';
+	});
+	detail.innerHTML=html;
+	activeId=word;
+	const sb=$("#speakBtn");
+	if(sb) sb.onclick=()=>playWord(word,sb);
+	detail.parentElement.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+// ---- audio: on-demand TTS via server.py (cached in audio.sqlite) ----
+// The server generates on the first request for a word+voice and caches it in
+// the database; later requests are served from cache. No API key in the browser.
+let audioSources=[];             // e.g. ["sreymom","piseth","google"] from /health
+const VOICE_META={
+	sreymom:{icon:"♀",label:"Microsoft ស្រី"},
+	piseth: {icon:"♂",label:"Microsoft ប្រុស"},
+	google: {icon:"G",label:"Google"},
+	kore:   {icon:"G♀",label:"Gemini ស្រី"},
+	puck:   {icon:"G♂",label:"Gemini ប្រុស"},
+};
+async function probeAudio(){
+	try{
+		const r=await fetch("/health");
+		if(r.ok){
+			const j=await r.json();
+			audioSources=j.sources||[];
+			sttSources=j.stt||[];
+			if(!sttSources.includes(stt)) stt=sttSources[0]||null;
+			if(window.updateMicBtn) updateMicBtn();
+		}
+	}catch(e){ audioSources=[]; sttSources=[]; }
+	audioBackend = audioSources.length>0;
+	if(audioBackend && !audioSources.includes(voice)) voice=audioSources[0];
+	updateVoiceBtn();
+}
+let toastTimer=null;
+function toast(msg){
+	const t=$("#toast");
+	t.textContent=msg; t.style.display="block";
+	clearTimeout(toastTimer); toastTimer=setTimeout(()=>{ t.style.display="none"; }, 5000);
+}
+
+// Fetch the clip rather than pointing <audio> at the URL: a voice whose provider
+// is refusing requests (gTTS throttled, Gemini out of quota) returns a JSON error,
+// and we want to say so — and still speak the word with a voice that works.
+async function playWord(word,btn,viaVoice){
+	if(!audioBackend) return;
+	if(currentAudio){ currentAudio.pause(); currentAudio=null; }
+	document.querySelectorAll(".speak").forEach(b=>b.classList.remove("playing","loading"));
+	if(muted) return;
+	const use = viaVoice || voice;
+	const reset=()=>{ if(btn){ btn.classList.remove("playing","loading"); btn.textContent="🔊"; } };
+	if(btn){ btn.classList.add("loading"); btn.textContent="…"; }
+	let url;
+	try{
+		const r=await fetch("/speak?voice="+use+"&word="+encodeURIComponent(word));
+		if(!r.ok){
+			let why=""; try{ why=(await r.json()).error||""; }catch(e){}
+			const short = /429|RESOURCE_EXHAUSTED|quota/i.test(why)
+				? (use==="google" ? "Google កំណត់ចំនួន (rate-limited)" : "Gemini អស់កូតា (out of quota)")
+				: (why||("HTTP "+r.status)).slice(0,90);
+			reset();
+			// fall back to a voice that is fully cached, and say that we did
+			const alt = audioSources.find(v=>v==="sreymom"||v==="piseth");
+			if(alt && alt!==use){
+				toast("សំឡេង "+(VOICE_META[use]||{}).label+" មិនដំណើរការ៖ "+short+" — ប្រើ "+(VOICE_META[alt]||{}).label+" ជំនួស។");
+				return playWord(word,btn,alt);
+			}
+			toast("សំឡេងមិនដំណើរការ៖ "+short);
+			return;
+		}
+		url=URL.createObjectURL(await r.blob());
+	}catch(e){ reset(); toast("សំឡេងមិនដំណើរការ៖ "+e.message); return; }
+	const a=new Audio(url);
+	currentAudio=a;
+	if(btn){
+		a.onplaying=()=>{ btn.classList.remove("loading"); btn.classList.add("playing"); btn.textContent="🔊"; };
+		a.onended=()=>{ reset(); URL.revokeObjectURL(url); };
+		a.onerror=()=>{ reset(); URL.revokeObjectURL(url); };
+	}
+	a.play().catch(()=>reset());
+}
+// ---- sound on/off (remembered) ----
+let muted=false;
+try{ muted = localStorage.getItem("kmdict-muted")==="1"; }catch(e){}
+function updateSoundBtn(){
+	const b=$("#soundBtn");
+	b.textContent = muted ? "🔇" : "🔊";
+	b.style.opacity = muted ? ".6" : "";
+	b.title = muted ? "សំឡេងបិទ" : "សំឡេងបើក";
+}
+$("#soundBtn").onclick=()=>{
+	muted=!muted;
+	try{ localStorage.setItem("kmdict-muted", muted?"1":"0"); }catch(e){}
+	if(muted){ document.querySelectorAll(".speak").forEach(b=>b.classList.remove("playing","loading")); }
+	updateSoundBtn();
+};
+updateSoundBtn();
+
+function updateVoiceBtn(){
+	const b=$("#voiceBtn");
+	const m=VOICE_META[voice]||{icon:"♪",label:voice};
+	b.textContent=m.icon;
+	b.title="សំឡេង៖ "+m.label+" (ចុចដើម្បីប្ដូរ)";
+	b.style.display = audioSources.length>1 ? "" : "none";  // only show if there's a choice
+}
+$("#voiceBtn").onclick=()=>{
+	if(audioSources.length<2) return;
+	const i=audioSources.indexOf(voice);
+	voice=audioSources[(i+1)%audioSources.length];
+	try{ localStorage.setItem("kmdict-voice",voice); }catch(e){}
+	updateVoiceBtn();
+	if(activeId) playWord(activeId,$("#speakBtn"));
+};
+
+function emptyDetail(){
+	detail.innerHTML='<div class="empty"><div class="big">វចនានុក្រម</div>'+
+		'<div>ជ្រើសរើសពាក្យ ឬវាយបញ្ចូលដើម្បីស្វែងរក។</div></div>';
+}
+
+// ---- events ----
+let t=null;
+qInput.addEventListener("input",()=>{
+	clearBtn.style.display = qInput.value ? "block":"none";
+	clearTimeout(t); t=setTimeout(()=>search(qInput.value),140);
+});
+clearBtn.onclick=()=>{ qInput.value=""; clearBtn.style.display="none"; qInput.focus(); search(""); };
+qInput.addEventListener("keydown",e=>{
+	const items=[...results.querySelectorAll("li[data-w]")]; if(!items.length) return;
+	let idx=items.findIndex(x=>x.classList.contains("on"));
+	if(e.key==="ArrowDown"){ e.preventDefault(); idx=Math.min(items.length-1,idx+1); items[idx].click(); items[idx].scrollIntoView({block:"nearest"}); }
+	else if(e.key==="ArrowUp"){ e.preventDefault(); idx=Math.max(0,idx-1); items[idx].click(); items[idx].scrollIntoView({block:"nearest"}); }
+	else if(e.key==="Enter"){ e.preventDefault(); (items[idx]||items[0]).click(); }
+});
+
+$("#aboutBtn").onclick=()=>$("#aboutDlg").showModal();
+$("#aboutDlg").addEventListener("click",e=>{ if(e.target.hasAttribute("data-close")||e.target.id==="aboutDlg") $("#aboutDlg").close(); });
+
+$("#themeBtn").onclick=()=>{
+	const cur=document.documentElement.getAttribute("data-theme");
+	const dark=window.matchMedia("(prefers-color-scheme:dark)").matches;
+	const next = cur ? (cur==="dark"?"light":"dark") : (dark?"light":"dark");
+	document.documentElement.setAttribute("data-theme",next);
+	try{ localStorage.setItem("kmdict-theme",next); }catch(e){}
+};
+try{ const s=localStorage.getItem("kmdict-theme"); if(s) document.documentElement.setAttribute("data-theme",s); }catch(e){}
+
+// ---- voice input: speak a word to search --------------------------------
+// Two paths. If server.py has a speech-to-text key (Gemini / Azure / Google
+// Cloud), the mic records here and POSTs the clip to /listen, which returns
+// Khmer text — that works in any browser. Otherwise we fall back to the
+// browser's own Web Speech API (Chrome/Edge only). See API_ACCESS.md.
+let sttSources=[];                 // e.g. ["gemini","azure"] from /health
+const STT_LABEL={whisper:"Whisper (local, no key)",gemini:"Gemini",azure:"Microsoft Azure Speech",google:"Google Cloud STT",elevenlabs:"ElevenLabs Scribe",assemblyai:"AssemblyAI"};
+const STT_ICON ={whisper:"W",gemini:"G✦",azure:"MS",google:"GC",elevenlabs:"11",assemblyai:"AAI"};
+let stt=null;                      // chosen engine
+try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
+
+(function(){
+	const micBtn=$("#micBtn");
+	let mediaRec=null, chunks=[], recording=false, stopTimer=null;
+
+	function setMic(state){         // "idle" | "rec" | "busy"
+		micBtn.classList.toggle("listening", state==="rec");
+		micBtn.textContent = state==="rec" ? "⏺" : state==="busy" ? "…" : "🎤";
+		micBtn.disabled = state==="busy";
+	}
+
+	async function sendClip(blob){
+		setMic("busy");
+		try{
+			const r=await fetch("/listen?engine="+encodeURIComponent(stt),
+				{method:"POST", body:blob, headers:{"Content-Type":blob.type||"audio/webm"}});
+			const j=await r.json();
+			if(!r.ok) throw new Error(j.error||("HTTP "+r.status));
+			const txt=(j.text||"").trim();
+			if(!txt){ micBtn.title="មិនឮពាក្យ — សូមព្យាយាមម្ដងទៀត"; return; }
+			qInput.value=txt;
+			clearBtn.style.display="block";
+			search(txt);
+			micBtn.title="ស្វែងរកដោយសំឡេង ("+(STT_LABEL[j.engine]||j.engine)+")";
+		}catch(e){
+			micBtn.title="កំហុសសំឡេង៖ "+e.message;
+		}finally{ setMic("idle"); }
+	}
+
+	async function recordAndSend(){
+		if(recording){ clearTimeout(stopTimer); mediaRec && mediaRec.stop(); return; }
+		let stream;
+		try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+		catch(e){ micBtn.title="សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន"; return; }
+		chunks=[];
+		mediaRec=new MediaRecorder(stream);
+		mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+		mediaRec.onstop=()=>{
+			recording=false;
+			stream.getTracks().forEach(t=>t.stop());
+			const blob=new Blob(chunks,{type:mediaRec.mimeType||"audio/webm"});
+			if(blob.size>1000) sendClip(blob); else setMic("idle");
+		};
+		mediaRec.start();
+		recording=true;
+		setMic("rec");
+		stopTimer=setTimeout(()=>{ if(recording) mediaRec.stop(); }, 8000);  // hard cap
+		autoStopOnSilence(stream);   // …but normally we stop as soon as you stop talking
+	}
+
+	// Watch the input level and end the recording ~0.8 s after speech stops, so a
+	// one-word search doesn't wait for the cap. Falls back to the cap if the
+	// browser has no AudioContext.
+	function autoStopOnSilence(stream){
+		const AC = window.AudioContext || window.webkitAudioContext;
+		if(!AC) return;
+		let ctx;
+		try{ ctx=new AC(); }catch(e){ return; }
+		const an=ctx.createAnalyser(); an.fftSize=1024;
+		ctx.createMediaStreamSource(stream).connect(an);
+		const buf=new Uint8Array(an.fftSize);
+		let spoke=false, quietSince=0;
+		(function tick(){
+			if(!recording){ try{ ctx.close(); }catch(e){} return; }
+			an.getByteTimeDomainData(buf);
+			let peak=0;
+			for(let i=0;i<buf.length;i++){ const d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
+			const loud = peak > 6;                       // ~5% of full scale
+			const now = Date.now();
+			if(loud){ spoke=true; quietSince=0; }
+			else if(spoke){
+				if(!quietSince) quietSince=now;
+				else if(now-quietSince > 800){ clearTimeout(stopTimer); mediaRec.stop(); return; }
+			}
+			setTimeout(tick, 100);
+		})();
+	}
+
+	// ---- fallback: the browser's own recogniser (Chrome/Edge, km-KH) ----
+	const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+	let rec=null, listening=false;
+	function browserSR(){
+		if(listening){ if(rec) rec.stop(); return; }
+		rec = new SR();
+		rec.lang = "km-KH";
+		rec.interimResults = true;
+		rec.maxAlternatives = 1;
+		rec.onstart = ()=>{ listening=true; micBtn.classList.add("listening"); micBtn.textContent="⏺"; };
+		rec.onresult = e=>{
+			let txt=""; for(const r of e.results) txt+=r[0].transcript;
+			txt=txt.trim();
+			qInput.value=txt;
+			clearBtn.style.display = txt ? "block":"none";
+			search(txt);
+		};
+		rec.onerror = e=>{
+			micBtn.title = e.error==="not-allowed"||e.error==="service-not-allowed"
+				? "សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន" : "កំហុសសំឡេង៖ "+e.error;
+		};
+		rec.onend = ()=>{ listening=false; micBtn.classList.remove("listening"); micBtn.textContent="🎤"; };
+		try{ rec.start(); }
+		catch(err){ listening=false; micBtn.classList.remove("listening"); micBtn.textContent="🎤"; }
+	}
+
+	// server STT is preferred when a key is configured; otherwise the browser's
+	micBtn.onclick=()=> sttSources.length ? recordAndSend() : browserSR();
+
+	// the engine button cycles whichever of gemini/azure/google have keys
+	const sttBtn=$("#sttBtn");
+	sttBtn.onclick=()=>{
+		if(sttSources.length<2) return;
+		stt=sttSources[(sttSources.indexOf(stt)+1)%sttSources.length];
+		try{ localStorage.setItem("kmdict-stt",stt); }catch(e){}
+		updateMicBtn();
+	};
+	window.updateMicBtn=function(){
+		const canServer = sttSources.length && navigator.mediaDevices && window.MediaRecorder;
+		micBtn.style.display = (canServer || SR) ? "" : "none";
+		micBtn.title = canServer
+			? "ស្វែងរកដោយសំឡេង ("+(STT_LABEL[stt]||stt)+")"
+			: "ស្វែងរកដោយសំឡេង (browser)";
+		sttBtn.style.display = sttSources.length>1 ? "" : "none";
+		sttBtn.textContent = STT_ICON[stt]||"S";
+		sttBtn.title = "ម៉ាស៊ីនស្ដាប់៖ "+(STT_LABEL[stt]||stt);
+	};
+	updateMicBtn();
+})();
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+boot();
+</script>
+</body>
+</html>

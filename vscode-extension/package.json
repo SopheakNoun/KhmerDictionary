@@ -1,0 +1,218 @@
+{
+  "name": "khmer-dictionary",
+  "displayName": "Khmer Dictionary (Chuon Nath)",
+  "description": "Look up Khmer words from the Chuon Nath dictionary — search panel, hover definitions, and look-up on selection.",
+  "version": "1.17.0",
+  "publisher": "camgsm",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "khmer",
+    "dictionary",
+    "chuon nath",
+    "cambodia",
+    "ភាសាខ្មែរ"
+  ],
+  "activationEvents": [
+    "onLanguage",
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "khmerdict.open",
+        "title": "Khmer Dictionary: Open Panel",
+        "icon": "$(book)"
+      },
+      {
+        "command": "khmerdict.lookup",
+        "title": "Khmer Dictionary: Look Up Word"
+      },
+      {
+        "command": "khmerdict.openSettings",
+        "title": "Khmer Dictionary: Open Settings",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "khmerdict.testAudio",
+        "title": "Khmer Dictionary: Test Audio Server"
+      },
+      {
+        "command": "khmerdict.startServer",
+        "title": "Khmer Dictionary: Start Audio Server"
+      },
+      {
+        "command": "khmerdict.stopServer",
+        "title": "Khmer Dictionary: Stop Audio Server"
+      },
+      {
+        "command": "khmerdict.voiceSearch",
+        "title": "Khmer Dictionary: Voice Search (open panel and record)",
+        "icon": "$(mic)"
+      },
+      {
+        "command": "khmerdict.prev",
+        "title": "Khmer Dictionary: Previous Headword"
+      },
+      {
+        "command": "khmerdict.next",
+        "title": "Khmer Dictionary: Next Headword"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "khmerdict.lookup",
+          "group": "navigation",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "khmerdict.lookup",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "khmerdict.voiceSearch",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m"
+      }
+    ],
+    "configuration": {
+      "title": "Khmer Dictionary",
+      "properties": {
+        "khmerDictionary.enableHover": {
+          "type": "boolean",
+          "default": true,
+          "order": 1,
+          "markdownDescription": "Show a definition tooltip when hovering over Khmer text in the editor."
+        },
+        "khmerDictionary.hoverMaxSenses": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "order": 2,
+          "markdownDescription": "Maximum number of senses (definitions) to show in a hover tooltip. `0` = show all."
+        },
+        "khmerDictionary.audioServerUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8777",
+          "order": 3,
+          "markdownDescription": "URL of the local audio server (`server.py`) used for the 🔊 pronunciation and 🎤 voice-search buttons. Prefer `127.0.0.1` over `localhost`: on Windows the name is resolved to IPv6 first and each request can wait ~2 s before falling back. The audio controls appear only when this server is running."
+        },
+        "khmerDictionary.defaultVoice": {
+          "type": "string",
+          "enum": [
+            "sreymom",
+            "piseth",
+            "google",
+            "kore",
+            "puck"
+          ],
+          "enumDescriptions": [
+            "Microsoft — Sreymom (female)",
+            "Microsoft — Piseth (male)",
+            "Google (Google Translate, single voice)",
+            "Gemini — Kore (female)",
+            "Gemini — Puck (male)"
+          ],
+          "default": "sreymom",
+          "order": 4,
+          "markdownDescription": "Voice selected by default in the panel's audio picker (used if that voice is available on the server)."
+        },
+        "khmerDictionary.sttEngine": {
+          "type": "string",
+          "enum": [
+            "whisper",
+            "gemini",
+            "azure",
+            "google",
+            "elevenlabs",
+            "assemblyai"
+          ],
+          "enumDescriptions": [
+            "Whisper running locally — no key, offline",
+            "Gemini (GEMINI_API_KEY)",
+            "Microsoft Azure Speech (AZURE_SPEECH_KEY + region)",
+            "Google Cloud Speech-to-Text (GOOGLE_STT_API_KEY)",
+            "ElevenLabs Scribe (ELEVENLABS_API_KEY)",
+            "AssemblyAI (ASSEMBLYAI_API_KEY)"
+          ],
+          "default": "gemini",
+          "order": 5,
+          "markdownDescription": "Speech-to-text engine for the 🎤 voice search, used if a key for it is configured in the audio server. See `API_ACCESS.md`."
+        },
+        "khmerDictionary.autoPlayOnLookup": {
+          "type": "boolean",
+          "default": false,
+          "order": 5,
+          "markdownDescription": "Automatically play the pronunciation when a word is opened in the panel (requires the audio server)."
+        },
+        "khmerDictionary.panelResultLimit": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 50,
+          "maximum": 2000,
+          "order": 6,
+          "markdownDescription": "Maximum number of words to list in the panel for a search or a browsed letter."
+        },
+        "khmerDictionary.serverScriptPath": {
+          "type": "string",
+          "default": "C:\\camgsm_organisation\\KhmerDictionary\\server.py",
+          "order": 7,
+          "markdownDescription": "Path to `server.py`. The extension can start it for you (command **Start Audio Server**, or automatically when the panel opens) so you don't need a separate terminal. Leave blank to manage the server yourself."
+        },
+        "khmerDictionary.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "order": 8,
+          "markdownDescription": "Python executable used to launch the audio server."
+        },
+        "khmerDictionary.autoStartServer": {
+          "type": "boolean",
+          "default": true,
+          "order": 9,
+          "markdownDescription": "When the panel opens, automatically start the audio server (using `serverScriptPath`) if it isn't already running."
+        },
+        "khmerDictionary.recordSeconds": {
+          "type": "integer",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 15,
+          "order": 6,
+          "markdownDescription": "How many seconds to record when the panel falls back to **host-side recording** (used when VS Code does not allow the webview to open the microphone). The server records with ffmpeg and returns the transcript."
+        },
+        "khmerDictionary.muteAudio": {
+          "type": "boolean",
+          "default": false,
+          "order": 10,
+          "markdownDescription": "Silence all pronunciation audio (panel and hover). Toggled by the 🔊/🔇 button in the panel toolbar."
+        },
+        "khmerDictionary.panelTheme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "enumDescriptions": [
+            "Follow the VS Code colour theme",
+            "Always light (cream)",
+            "Always dark"
+          ],
+          "default": "auto",
+          "order": 11,
+          "markdownDescription": "Colours for the dictionary panel. Toggled by the ◐/☀/☾ button in the panel toolbar."
+        }
+      }
+    }
+  }
+}

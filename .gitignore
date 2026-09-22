@@ -1,0 +1,18 @@
+# --- secrets: never commit ---
+gemini_api_key.txt
+api_keys.txt
+*.key
+
+# --- generated audio cache (500 MB, far over GitHub's 100 MB file limit) ---
+audio.sqlite
+audio.sqlite-journal
+data.sqlite
+*.wav
+*.mp3
+
+# --- build output: keep the source, not every packaged build ---
+vscode-extension/*.vsix
+node_modules/
+__pycache__/
+*.pyc
+.vscode-test/
