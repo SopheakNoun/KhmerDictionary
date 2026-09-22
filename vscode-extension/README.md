@@ -5,9 +5,13 @@ Look up Khmer words from the **Chuon Nath dictionary** without leaving VS Code:
 
 ## Features
 
-- **Panel** — `Khmer Dictionary: Open Panel` (command palette): search box, browse by
-  consonant, and a detail view with definitions, part of speech, and examples. Themed to match
-  your VS Code color theme; headwords in the Khmer *Muol* font.
+- **Three homes** — the dictionary lives in the **Activity Bar sidebar** (its own book icon), the
+  **bottom Panel** beside Terminal, or an **editor tab**. One toolbar button moves it between them,
+  carrying the open word along; `khmerDictionary.openIn` sets where lookups land by default.
+  Search box, browse by consonant, and a detail view with definitions, part of speech and examples.
+- **Toolbar** — 🎤 voice search · engine picker · ◀ ▶ back/forward through the words you have
+  viewed (Alt+←/→) · 🔊/🔇 sound · ◐/☀/☾ light-dark · ⟳ restart the audio service · ⧉ move · ⚙.
+  Themed to match your VS Code colour theme; headwords in the Khmer *Muol* font.
 - **Hover** — hover over Khmer text in any file and a definition tooltip appears (exact match, or
   the longest dictionary word starting at that point, since Khmer has no spaces between words).
   When the audio server is running, the hover shows **🔊 play links per voice** (♀ ♂ G G♀ G♂) —
@@ -24,6 +28,10 @@ Look up Khmer words from the **Chuon Nath dictionary** without leaving VS Code:
 - **Look up selection** — select Khmer text and run `Khmer Dictionary: Look Up Word`
   (also in the editor right-click menu, or `Ctrl+Alt+K` / `Cmd+Alt+K`). With no selection it
   prompts for a word.
+
+- **The audio service** — the extension starts `server.py` itself, under `pythonw.exe`, so **no
+  console window ever appears**; it logs to `server.log` beside the script. It refuses to start a
+  second copy if one is already running, whoever started it.
 
 ## Run it (development)
 

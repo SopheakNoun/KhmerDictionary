@@ -2,7 +2,7 @@
   "name": "khmer-dictionary",
   "displayName": "Khmer Dictionary (Chuon Nath)",
   "description": "Look up Khmer words from the Chuon Nath dictionary — search panel, hover definitions, and look-up on selection.",
-  "version": "1.17.0",
+  "version": "1.26.0",
   "publisher": "camgsm",
   "engines": {
     "vscode": "^1.75.0"
@@ -27,6 +27,16 @@
       {
         "command": "khmerdict.open",
         "title": "Khmer Dictionary: Open Panel",
+        "icon": "$(book)"
+      },
+      {
+        "command": "khmerdict.openSidebar",
+        "title": "Khmer Dictionary: Open in Sidebar",
+        "icon": "$(book)"
+      },
+      {
+        "command": "khmerdict.openBottomPanel",
+        "title": "Khmer Dictionary: Open in Bottom Panel",
         "icon": "$(book)"
       },
       {
@@ -62,6 +72,11 @@
       {
         "command": "khmerdict.next",
         "title": "Khmer Dictionary: Next Headword"
+      },
+      {
+        "command": "khmerdict.restartServer",
+        "title": "Khmer Dictionary: Restart Audio Server",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -131,20 +146,16 @@
         "khmerDictionary.sttEngine": {
           "type": "string",
           "enum": [
-            "whisper",
             "gemini",
             "azure",
             "google",
-            "elevenlabs",
-            "assemblyai"
+            "whisper"
           ],
           "enumDescriptions": [
-            "Whisper running locally — no key, offline",
             "Gemini (GEMINI_API_KEY)",
             "Microsoft Azure Speech (AZURE_SPEECH_KEY + region)",
             "Google Cloud Speech-to-Text (GOOGLE_STT_API_KEY)",
-            "ElevenLabs Scribe (ELEVENLABS_API_KEY)",
-            "AssemblyAI (ASSEMBLYAI_API_KEY)"
+            "Whisper running locally, no key (needs WHISPER_STT=1 and a large model)"
           ],
           "default": "gemini",
           "order": 5,
@@ -174,7 +185,7 @@
           "type": "string",
           "default": "python",
           "order": 8,
-          "markdownDescription": "Python executable used to launch the audio server."
+          "markdownDescription": "Python executable used to launch the audio server. On Windows the matching `pythonw.exe` is used when it exists, so the server starts **silently** with no console window; its output goes to `server.log` beside `server.py`."
         },
         "khmerDictionary.autoStartServer": {
           "type": "boolean",
@@ -211,8 +222,56 @@
           "default": "auto",
           "order": 11,
           "markdownDescription": "Colours for the dictionary panel. Toggled by the ◐/☀/☾ button in the panel toolbar."
+        },
+        "khmerDictionary.openIn": {
+          "type": "string",
+          "enum": [
+            "sidebar",
+            "panel",
+            "editor"
+          ],
+          "enumDescriptions": [
+            "The Khmer Dictionary view in the Activity Bar",
+            "The Khmer Dictionary view in the bottom Panel, beside Terminal",
+            "A webview tab beside the editor"
+          ],
+          "default": "sidebar",
+          "order": 2,
+          "markdownDescription": "Where **Open Panel**, hover → 📖 and *Look Up Word* show the dictionary."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "khmerdict",
+          "title": "Khmer Dictionary",
+          "icon": "media/khmer-dict.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "khmerdictPanel",
+          "title": "Khmer Dictionary",
+          "icon": "media/khmer-dict.svg"
+        }
+      ]
+    },
+    "views": {
+      "khmerdict": [
+        {
+          "type": "webview",
+          "id": "khmerdict.view",
+          "name": "វចនានុក្រម / Dictionary"
+        }
+      ],
+      "khmerdictPanel": [
+        {
+          "type": "webview",
+          "id": "khmerdict.panelView",
+          "name": "វចនានុក្រម / Dictionary"
+        }
+      ]
     }
   }
 }

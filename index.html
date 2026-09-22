@@ -145,6 +145,8 @@
 		<button class="iconbtn" id="sttBtn" title="ម៉ាស៊ីនស្ដាប់" style="display:none;font-size:13px">G</button>
 		<button class="iconbtn" id="voiceBtn" title="សំឡេង៖ ស្រី/ប្រុស">♀</button>
 		<button class="iconbtn" id="soundBtn" title="បិទ/បើកសំឡេង">🔊</button>
+		<button class="iconbtn" id="autoBtn" title="លេងស្វ័យប្រវត្តិ / Autoplay">▶</button>
+		<button class="iconbtn" id="restartBtn" title="ចាប់ផ្ដើម server ឡើងវិញ / Restart audio service">⟳</button>
 		<button class="iconbtn" id="aboutBtn" title="អំពី">ⓘ</button>
 		<button class="iconbtn" id="themeBtn" title="ពន្លឺ/ងងឹត">◐</button>
 	</div>
@@ -358,6 +360,9 @@ function renderDetail(word,entries){
 	activeId=word;
 	const sb=$("#speakBtn");
 	if(sb) sb.onclick=()=>playWord(word,sb);
+	// autoplay: opening a word is itself the click the browser needs, so this
+	// is allowed as long as the user got here by clicking rather than on load
+	if(autoplay && sb && audioBackend && !muted) playWord(word,sb);
 	detail.parentElement.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
 
@@ -398,13 +403,41 @@ function toast(msg){
 // is refusing requests (gTTS throttled, Gemini out of quota) returns a JSON error,
 // and we want to say so — and still speak the word with a voice that works.
 async function playWord(word,btn,viaVoice){
-	if(!audioBackend) return;
+	if(!audioBackend){
+		// the page was loaded before the server came up, or it stopped since
+		await probeAudio();
+		if(!audioBackend){ toast("server សំឡេងមិនដំណើរការ — ចុច ⟳ ដើម្បីចាប់ផ្ដើម។ / audio server is not running — press ⟳."); return; }
+	}
 	if(currentAudio){ currentAudio.pause(); currentAudio=null; }
 	document.querySelectorAll(".speak").forEach(b=>b.classList.remove("playing","loading"));
 	if(muted) return;
 	const use = viaVoice || voice;
+	const url = "/speak?voice="+use+"&word="+encodeURIComponent(word);
 	const reset=()=>{ if(btn){ btn.classList.remove("playing","loading"); btn.textContent="🔊"; } };
 	if(btn){ btn.classList.add("loading"); btn.textContent="…"; }
+
+	// Online: play the server URL directly. The clip streams as it arrives and
+	// the server writes it into audio.sqlite on the way past, so the next play
+	// of this word is instant and works offline.
+	if(navigator.onLine){
+		const a=new Audio(url);
+		currentAudio=a;
+		a.onplaying=()=>{ if(btn){ btn.classList.remove("loading"); btn.classList.add("playing"); btn.textContent="🔊"; } };
+		a.onended=reset;
+		a.onerror=()=>{ reset(); playFromBlob(word,btn,use); };   // 502, or a codec the tag refuses
+		a.play().catch(()=>{ reset(); playFromBlob(word,btn,use); });
+		return;
+	}
+	// Offline: fetch it, so a failure can be read and explained rather than
+	// just failing silently. Anything already cached still plays.
+	return playFromBlob(word,btn,use);
+}
+
+// Fetch the clip and play it from a blob. Slower to start, but the response
+// body can be inspected: a provider that is refusing requests answers with
+// JSON, which lets us say why and fall back to a voice that works.
+async function playFromBlob(word,btn,use){
+	const reset=()=>{ if(btn){ btn.classList.remove("playing","loading"); btn.textContent="🔊"; } };
 	let url;
 	try{
 		const r=await fetch("/speak?voice="+use+"&word="+encodeURIComponent(word));
@@ -414,11 +447,10 @@ async function playWord(word,btn,viaVoice){
 				? (use==="google" ? "Google កំណត់ចំនួន (rate-limited)" : "Gemini អស់កូតា (out of quota)")
 				: (why||("HTTP "+r.status)).slice(0,90);
 			reset();
-			// fall back to a voice that is fully cached, and say that we did
 			const alt = audioSources.find(v=>v==="sreymom"||v==="piseth");
 			if(alt && alt!==use){
 				toast("សំឡេង "+(VOICE_META[use]||{}).label+" មិនដំណើរការ៖ "+short+" — ប្រើ "+(VOICE_META[alt]||{}).label+" ជំនួស។");
-				return playWord(word,btn,alt);
+				return playFromBlob(word,btn,alt);
 			}
 			toast("សំឡេងមិនដំណើរការ៖ "+short);
 			return;
@@ -427,16 +459,47 @@ async function playWord(word,btn,viaVoice){
 	}catch(e){ reset(); toast("សំឡេងមិនដំណើរការ៖ "+e.message); return; }
 	const a=new Audio(url);
 	currentAudio=a;
-	if(btn){
-		a.onplaying=()=>{ btn.classList.remove("loading"); btn.classList.add("playing"); btn.textContent="🔊"; };
-		a.onended=()=>{ reset(); URL.revokeObjectURL(url); };
-		a.onerror=()=>{ reset(); URL.revokeObjectURL(url); };
-	}
+	a.onplaying=()=>{ if(btn){ btn.classList.remove("loading"); btn.classList.add("playing"); btn.textContent="🔊"; } };
+	a.onended=()=>{ reset(); URL.revokeObjectURL(url); };
+	a.onerror=()=>{ reset(); URL.revokeObjectURL(url); };
 	a.play().catch(()=>reset());
 }
-// ---- sound on/off (remembered) ----
-let muted=false;
+
+// ---- sound on/off and autoplay (both remembered) ----
+let muted=false, autoplay=false;
 try{ muted = localStorage.getItem("kmdict-muted")==="1"; }catch(e){}
+try{ autoplay = localStorage.getItem("kmdict-autoplay")==="1"; }catch(e){}
+function updateAutoBtn(){
+	const b=$("#autoBtn");
+	b.style.opacity = autoplay ? "" : ".55";
+	b.textContent = autoplay ? "▶" : "⏸";
+	b.title = autoplay ? "លេងស្វ័យប្រវត្តិ៖ បើក / Autoplay on" : "លេងស្វ័យប្រវត្តិ៖ បិទ / Autoplay off";
+}
+$("#autoBtn").onclick=()=>{
+	autoplay=!autoplay;
+	try{ localStorage.setItem("kmdict-autoplay", autoplay?"1":"0"); }catch(e){}
+	updateAutoBtn();
+	if(autoplay && activeId) playWord(activeId,$("#speakBtn"));
+};
+updateAutoBtn();
+
+// ---- restart the audio service (server.py re-execs itself) ----
+$("#restartBtn").onclick=async()=>{
+	const b=$("#restartBtn");
+	b.disabled=true; b.textContent="…";
+	try{
+		await fetch("/restart",{method:"POST"});
+	}catch(e){ /* the connection dropping is expected */ }
+	toast("កំពុងចាប់ផ្ដើម server ឡើងវិញ… / restarting the audio service…");
+	for(let i=0;i<30;i++){
+		await new Promise(r=>setTimeout(r,500));
+		try{
+			const r=await fetch("/health",{cache:"no-store"});
+			if(r.ok){ await probeAudio(); toast("server ដំណើរការឡើងវិញ / audio service is back."); break; }
+		}catch(e){ /* still down */ }
+	}
+	b.disabled=false; b.textContent="⟳";
+};
 function updateSoundBtn(){
 	const b=$("#soundBtn");
 	b.textContent = muted ? "🔇" : "🔊";
@@ -505,8 +568,8 @@ try{ const s=localStorage.getItem("kmdict-theme"); if(s) document.documentElemen
 // Khmer text — that works in any browser. Otherwise we fall back to the
 // browser's own Web Speech API (Chrome/Edge only). See API_ACCESS.md.
 let sttSources=[];                 // e.g. ["gemini","azure"] from /health
-const STT_LABEL={whisper:"Whisper (local, no key)",gemini:"Gemini",azure:"Microsoft Azure Speech",google:"Google Cloud STT",elevenlabs:"ElevenLabs Scribe",assemblyai:"AssemblyAI"};
-const STT_ICON ={whisper:"W",gemini:"G✦",azure:"MS",google:"GC",elevenlabs:"11",assemblyai:"AAI"};
+const STT_LABEL={whisper:"Whisper (local, no key)",gemini:"Gemini",azure:"Microsoft Azure Speech",google:"Google Cloud STT"};
+const STT_ICON ={whisper:"W",gemini:"G✦",azure:"MS",google:"GC"};
 let stt=null;                      // chosen engine
 try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
 

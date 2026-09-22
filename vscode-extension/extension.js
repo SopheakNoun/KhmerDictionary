@@ -33,11 +33,19 @@ async function ensureServer(notify) {
 	}
 	if (!serverProc) {
 		const port = (audioBaseUrl().match(/:(\d+)/) || [])[1] || "8777";
-		serverProc = cp.spawn(py, [script], {
+		let logFd = "ignore";
+		try { logFd = fs.openSync(path.join(path.dirname(script), "server.log"), "a"); }
+		catch (e) { /* unwritable folder: fall back to discarding output */ }
+		serverProc = cp.spawn(silentPython(py), [script], {
 			cwd: path.dirname(script),
 			env: Object.assign({}, process.env, { PORT: port }),
 			windowsHide: true,
+			detached: process.platform === "win32",
+			// Keep its output: "ignore" would send the log to nul, and under
+			// pythonw.exe there is no console to fall back to.
+			stdio: ["ignore", logFd, logFd],
 		});
+		if (serverProc.unref) { serverProc.unref(); }   // outlive this window
 		serverProc.on("exit", () => { serverProc = null; });
 		serverProc.on("error", () => { serverProc = null; });
 	}
@@ -50,6 +58,19 @@ async function ensureServer(notify) {
 }
 function stopServer() {
 	if (serverProc) { try { serverProc.kill(); } catch (e) { /* ignore */ } serverProc = null; }
+}
+
+// pythonw.exe is Python without a console window, so starting the audio server
+// never flashes a terminal. Falls back to whatever the user configured.
+function silentPython(py) {
+	if (process.platform !== "win32") { return py; }
+	if (/pythonw(\.exe)?$/i.test(py)) { return py; }
+	if (py.includes(path.sep) && /python(\.exe)?$/i.test(py)) {
+		const w = py.replace(/python(\.exe)?$/i,
+			m => (m.toLowerCase().endsWith(".exe") ? "pythonw.exe" : "pythonw"));
+		return fs.existsSync(w) ? w : py;
+	}
+	return py === "python" ? "pythonw" : py;    // resolved from PATH
 }
 
 // Play a word through the OS (extension host) — used by the hover 🔊, which has
@@ -217,19 +238,152 @@ function makeHoverProvider(context) {
 	};
 }
 
-// ---- webview panel ----
+// ---- webview: an editor panel and a sidebar view, sharing one UI ----
 let panel = null;
-let panelReady = false;   // becomes true when the webview signals it has loaded
-let pendingMsg = null;    // action to deliver once the webview is ready
+let panelReady = false;   // becomes true when a webview signals it has loaded
+// "sidebar" = Activity Bar container, "panel" = the bottom Panel container.
+const views = { sidebar: null, panel: null };
+const viewReady = { sidebar: false, panel: false };
+let pendingMsg = null;    // action to deliver on the next "ready" handshake
 
-function sendToPanel(msg) {
-	if (panelReady) { panel.webview.postMessage(msg); }
-	else { pendingMsg = msg; }   // delivered on the webview's "ready" handshake
+function activeWebview() {
+	for (const slot of ["sidebar", "panel"]) {
+		if (views[slot] && views[slot].visible) { return { wv: views[slot].webview, ready: viewReady[slot] }; }
+	}
+	if (panel) { return { wv: panel.webview, ready: panelReady }; }
+	for (const slot of ["sidebar", "panel"]) {
+		if (views[slot]) { return { wv: views[slot].webview, ready: viewReady[slot] }; }
+	}
+	return null;
 }
 
+function sendToPanel(msg) {
+	const t = activeWebview();
+	if (t && t.ready) { t.wv.postMessage(msg); }
+	else { pendingMsg = msg; }
+}
+
+function reprobeAll() {
+	if (panel && panelReady) { panel.webview.postMessage({ type: "reprobe" }); }
+	for (const slot of ["sidebar", "panel"]) {
+		if (views[slot] && viewReady[slot]) { views[slot].webview.postMessage({ type: "reprobe" }); }
+	}
+}
+
+// Everything the webview needs, built once and reused by both hosts.
+async function buildHtml(context, webview, host) {
+	loadDict(context);
+	const uri = p => webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, ...p)));
+	const rawBase = (vscode.workspace.getConfiguration("khmerDictionary")
+		.get("audioServerUrl") || "http://127.0.0.1:8777").replace(/\/$/, "");
+	// asExternalUri is the correct way for a webview to reach a local server
+	// (works locally and in Remote/Codespaces). On desktop it stays loopback.
+	let audioBase = rawBase;
+	try { audioBase = (await vscode.env.asExternalUri(vscode.Uri.parse(rawBase))).toString().replace(/\/$/, ""); }
+	catch (e) { /* keep rawBase */ }
+	const cfg = vscode.workspace.getConfiguration("khmerDictionary");
+	const uiCfg = {
+		defaultVoice: cfg.get("defaultVoice") || "sreymom",
+		sttEngine: cfg.get("sttEngine") || "gemini",
+		recordSeconds: cfg.get("recordSeconds") || 4,
+		muteAudio: cfg.get("muteAudio") === true,
+		panelTheme: cfg.get("panelTheme") || "auto",
+		autoPlay: !!cfg.get("autoPlayOnLookup"),
+		resultLimit: cfg.get("panelResultLimit") || 400,
+		host: host || "editor",
+	};
+	return webviewHtml(webview, uri(["data", "dict.json"]),
+		uri(["fonts", "KhmerOS_muollight.ttf"]), uri(["fonts", "KhmerOSSiemreap.ttf"]),
+		audioBase, uiCfg);
+}
+
+function wireMessages(context, webview, onReady) {
+	webview.onDidReceiveMessage(msg => {
+		if (!msg) { return; }
+		if (msg.type === "ready") {
+			onReady();
+			if (pendingMsg) { webview.postMessage(pendingMsg); pendingMsg = null; }
+		} else if (msg.type === "openSettings") {
+			vscode.commands.executeCommand("khmerdict.openSettings");
+		} else if (msg.type === "dataError") {
+			vscode.window.showErrorMessage("Khmer Dictionary: could not load dictionary data — " + msg.error);
+		} else if (msg.type === "setConfig") {
+			// the panel's 🔊 / ◐ toggles persist as user settings
+			vscode.workspace.getConfiguration("khmerDictionary")
+				.update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+		} else if (msg.type === "startServer") {
+			ensureServer(true).then(ok => { if (ok) { reprobeAll(); } });
+		} else if (msg.type === "switchHost") {
+			const to = msg.to || "sidebar";
+			vscode.workspace.getConfiguration("khmerDictionary")
+				.update("openIn", to, vscode.ConfigurationTarget.Global)
+				.then(() => moveTo(context, to, msg.word));
+		} else if (msg.type === "restartServer") {
+			vscode.commands.executeCommand("khmerdict.restartServer");
+		} else if (msg.type === "playHost") {
+			// autoplay / editor-driven lookup: the webview may not play audio
+			// itself without a click in it, so the host plays through the OS.
+			if (!vscode.workspace.getConfiguration("khmerDictionary").get("muteAudio")) {
+				playViaHost(msg.word, msg.voice);
+			}
+		}
+	}, null, context.subscriptions);
+}
+
+function maybeAutoStartServer() {
+	if (vscode.workspace.getConfiguration("khmerDictionary").get("autoStartServer")) {
+		ensureServer(false).then(ok => { if (ok) { reprobeAll(); } });
+	}
+}
+
+// The Activity Bar view. VS Code resolves it the first time the user opens the
+// container, and keeps it alive afterwards (retainContextWhenHidden).
+class KhmerDictViewProvider {
+	constructor(context, slot) { this.context = context; this.slot = slot; }
+	async resolveWebviewView(view) {
+		const slot = this.slot;
+		views[slot] = view; viewReady[slot] = false;
+		view.webview.options = {
+			enableScripts: true,
+			localResourceRoots: [vscode.Uri.file(this.context.extensionPath)],
+		};
+		view.webview.html = await buildHtml(this.context, view.webview, slot);
+		wireMessages(this.context, view.webview, () => { viewReady[slot] = true; });
+		view.onDidDispose(() => { views[slot] = null; viewReady[slot] = false; });
+		maybeAutoStartServer();
+	}
+}
+
+const VIEW_ID = { sidebar: "khmerdict.view", panel: "khmerdict.panelView" };
+
+// Move the dictionary between the sidebar view and an editor tab, carrying the
+// word currently open across with it.
+async function moveTo(context, to, word) {
+	if (to === "editor") {
+		await openPanel(context, word, { forceEditor: true });
+		return;
+	}
+	if (panel) { panel.dispose(); }
+	await vscode.commands.executeCommand(VIEW_ID[to] + ".focus");
+	if (word) { sendToPanel({ type: "lookup", word: word }); }
+}
+
+// Show the dictionary where the user prefers it, and look a word up there.
 async function openPanel(context, initialWord, opts) {
 	opts = opts || {};
 	loadDict(context);
+	const where = opts.forceEditor ? "editor"
+		: (vscode.workspace.getConfiguration("khmerDictionary").get("openIn") || "sidebar");
+
+	if (where === "sidebar" || where === "panel") {
+		try {
+			await vscode.commands.executeCommand(VIEW_ID[where] + ".focus");
+			maybeAutoStartServer();
+			if (initialWord) { sendToPanel({ type: opts.play ? "play" : "lookup", word: initialWord, voice: opts.voice }); }
+			return;
+		} catch (e) { /* fall through to the editor panel */ }
+	}
+
 	if (panel) {
 		panel.reveal(vscode.ViewColumn.Beside, !!opts.preserveFocus);
 	} else {
@@ -241,51 +395,10 @@ async function openPanel(context, initialWord, opts) {
 			  localResourceRoots: [vscode.Uri.file(context.extensionPath)] }
 		);
 		panel.onDidDispose(() => { panel = null; panelReady = false; pendingMsg = null; }, null, context.subscriptions);
-		const dataUri = panel.webview.asWebviewUri(
-			vscode.Uri.file(path.join(context.extensionPath, "data", "dict.json")));
-		const fontMuol = panel.webview.asWebviewUri(
-			vscode.Uri.file(path.join(context.extensionPath, "fonts", "KhmerOS_muollight.ttf")));
-		const fontBody = panel.webview.asWebviewUri(
-			vscode.Uri.file(path.join(context.extensionPath, "fonts", "KhmerOSSiemreap.ttf")));
-		const rawBase = (vscode.workspace.getConfiguration("khmerDictionary")
-			.get("audioServerUrl") || "http://localhost:8777").replace(/\/$/, "");
-		// asExternalUri is the correct way for a webview to reach a local server
-		// (works locally and in Remote/Codespaces). On desktop it stays localhost.
-		let audioBase = rawBase;
-		try { audioBase = (await vscode.env.asExternalUri(vscode.Uri.parse(rawBase))).toString().replace(/\/$/, ""); }
-		catch (e) { /* keep rawBase */ }
-		const cfg = vscode.workspace.getConfiguration("khmerDictionary");
-			const uiCfg = {
-				defaultVoice: cfg.get("defaultVoice") || "sreymom",
-				sttEngine: cfg.get("sttEngine") || "gemini",
-				recordSeconds: cfg.get("recordSeconds") || 4,
-				muteAudio: cfg.get("muteAudio") === true,
-				panelTheme: cfg.get("panelTheme") || "auto",
-				autoPlay: !!cfg.get("autoPlayOnLookup"),
-				resultLimit: cfg.get("panelResultLimit") || 400,
-			};
-			panel.webview.html = webviewHtml(panel.webview, dataUri, fontMuol, fontBody, audioBase, uiCfg);
-			panel.webview.onDidReceiveMessage(msg => {
-				if (msg && msg.type === "ready") {
-						panelReady = true;
-						if (pendingMsg) { panel.webview.postMessage(pendingMsg); pendingMsg = null; }
-					} else if (msg && msg.type === "openSettings") {
-					vscode.commands.executeCommand("khmerdict.openSettings");
-				} else if (msg && msg.type === "dataError") {
-					vscode.window.showErrorMessage("Khmer Dictionary: could not load dictionary data — " + msg.error);
-				} else if (msg && msg.type === "setConfig") {
-					// the panel's 🔊 / ◐ toggles persist as user settings
-					vscode.workspace.getConfiguration("khmerDictionary")
-						.update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
-				} else if (msg && msg.type === "startServer") {
-					ensureServer(true).then(ok => { if (ok && panel && panelReady) { panel.webview.postMessage({ type: "reprobe" }); } });
-				}
-			}, null, context.subscriptions);
+		panel.webview.html = await buildHtml(context, panel.webview, "editor");
+		wireMessages(context, panel.webview, () => { panelReady = true; });
 	}
-	// auto-start the audio server so the 🔊 controls appear without a terminal
-	if (vscode.workspace.getConfiguration("khmerDictionary").get("autoStartServer")) {
-		ensureServer(false).then(ok => { if (ok && panel && panelReady) { panel.webview.postMessage({ type: "reprobe" }); } });
-	}
+	maybeAutoStartServer();
 	if (initialWord) {
 		sendToPanel({ type: opts.play ? "play" : "lookup", word: initialWord, voice: opts.voice });
 	}
@@ -321,7 +434,9 @@ function webviewHtml(webview, dataUri, fontMuol, fontBody, audioBase, cfg) {
 		`font-src ${webview.cspSource}; style-src 'unsafe-inline'; ` +
 		`script-src 'unsafe-inline'; ` +
 		`connect-src ${webview.cspSource} ${audioOrigins}; ` +
-		`media-src ${webview.cspSource} ${audioOrigins};`;
+		// blob: matters — playback fetches the clip and plays it from a blob URL,
+		// so without it every sound is silently blocked by the CSP.
+		`media-src ${webview.cspSource} ${audioOrigins} blob:;`;
 	return `<!DOCTYPE html><html lang="km"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
@@ -362,19 +477,20 @@ body{margin:0;font-family:"KhmerSiemreap","Noto Sans Khmer",sans-serif;
 .speak:hover{filter:brightness(1.1)}
 .speak.playing{animation:pulse 1s ease-in-out infinite}
 @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
-#sttsel{display:none;font-family:inherit;font-size:13px;padding:6px;border-radius:6px;
+#sttsel{font-family:inherit;font-size:13px;padding:6px;border-radius:6px;
   color:var(--vscode-dropdown-foreground);background:var(--vscode-dropdown-background);
   border:1px solid var(--vscode-dropdown-border,transparent)}
-#voice{display:none;font-family:inherit;font-size:13px;padding:6px;border-radius:6px;
+#voice{font-family:inherit;font-size:13px;padding:6px;border-radius:6px;
   color:var(--vscode-dropdown-foreground);background:var(--vscode-dropdown-background);
   border:1px solid var(--vscode-dropdown-border,transparent)}
-#mic{display:none;flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
+#mic{flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
   color:var(--vscode-button-secondaryForeground);background:var(--vscode-button-secondaryBackground);border:0}
 #mic:hover{filter:brightness(1.1)}
+#mic:disabled,#voice:disabled,#sttsel:disabled{opacity:.45;cursor:default}
 #mic.rec{background:var(--btn);color:#fff;animation:pulse 1s ease-in-out infinite}
-#gear,#sound,#theme,#back,#fwd{flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
+#gear,#sound,#theme,#back,#fwd,#restart,#where{flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
   color:var(--vscode-button-secondaryForeground);background:var(--vscode-button-secondaryBackground);border:0}
-#gear:hover,#sound:hover,#theme:hover,#back:hover,#fwd:hover{filter:brightness(1.1)}
+#gear:hover,#sound:hover,#theme:hover,#back:hover,#fwd:hover,#restart:hover,#where:hover{filter:brightness(1.1)}
 #back:disabled,#fwd:disabled{opacity:.35;cursor:default}
 #sound.off{opacity:.55}
 /* Forced themes: the panel normally inherits VS Code's colours, so overriding
@@ -412,6 +528,8 @@ body[data-force="dark"]{
   <button id="back" title="ថយក្រោយ / Back (Alt+Left)" disabled>◀</button>
   <button id="fwd" title="ទៅមុខ / Forward (Alt+Right)" disabled>▶</button>
   <button id="sound" title="បិទ/បើកសំឡេង / Sound on-off">🔊</button>
+  <button id="restart" title="ចាប់ផ្ដើម server ឡើងវិញ / Restart audio service">⟳</button>
+  <button id="where" title="ប្ដូរទីតាំង / Move to editor or sidebar">⧉</button>
   <button id="theme" title="ពន្លឺ/ងងឹត / Light-dark">◐</button>
   <select id="voice" title="សំឡេង / Voice"></select>
   <button id="gear" title="Settings">⚙</button></div>
@@ -426,7 +544,7 @@ const vsc=acquireVsCodeApi();
 const VOICE_META={sreymom:"Microsoft ស្រី",piseth:"Microsoft ប្រុស",google:"Google",kore:"Gemini ស្រី",puck:"Gemini ប្រុស"};
 let audioSources=[], voice=null, curAudio=null, curWord=null;
 let sttSources=[], stt=null, hostMic=false;   // STT engines + host-side recording
-const STT_META={whisper:"Whisper (local)",gemini:"Gemini",azure:"Microsoft Azure",google:"Google Cloud",elevenlabs:"ElevenLabs Scribe",assemblyai:"AssemblyAI"};
+const STT_META={whisper:"Whisper (local)",gemini:"Gemini",azure:"Microsoft Azure",google:"Google Cloud"};
 document.getElementById("gear").onclick=()=>vsc.postMessage({type:"openSettings"});
 
 // ---- sound on/off and panel theme (both remembered in settings) ----
@@ -448,6 +566,21 @@ function applySound(){
   if(muted && curAudio){ curAudio.pause(); curAudio=null;
     document.querySelectorAll(".speak").forEach(x=>x.classList.remove("playing")); }
 }
+(function(){
+  // one button, three homes: sidebar -> bottom panel -> editor tab -> sidebar
+  const NEXT={sidebar:"panel", panel:"editor", editor:"sidebar"};
+  const ICON={sidebar:"◧", panel:"▤", editor:"⧉"};
+  const NAME={sidebar:"sidebar", panel:"bottom panel", editor:"editor tab"};
+  const b=document.getElementById("where");
+  const to=NEXT[CFG.host]||"sidebar";
+  b.textContent=ICON[to];
+  b.title="ប្ដូរទៅ "+NAME[to]+" / Move to the "+NAME[to];
+  b.onclick=()=>vsc.postMessage({type:"switchHost", to:to, word:curWord});
+})();
+document.getElementById("restart").onclick=()=>{
+  setStatus("កំពុងចាប់ផ្ដើម server ឡើងវិញ… / restarting the audio service…");
+  vsc.postMessage({type:"restartServer"});
+};
 document.getElementById("sound").onclick=()=>{
   muted=!muted; applySound(); vsc.postMessage({type:"setConfig",key:"muteAudio",value:muted});
 };
@@ -506,10 +639,38 @@ function show(word,el){document.querySelectorAll(".list div").forEach(x=>x.class
   if(CFG.autoPlay && audioSources.length){ play(word,sb); }}
 // ---- audio via local server (server.py) ----
 function setStatus(html){const el=$("#status");if(html){el.style.display="";el.innerHTML=html;
-  const rt=$("#retry");if(rt)rt.onclick=e=>{e.preventDefault();applyTheme(); applySound();
+  const rt=$("#retry");if(rt)rt.onclick=e=>{e.preventDefault();applyTheme(); applySound(); renderVoiceControls();
 probeHealth();};
   const ss=$("#startsrv");if(ss)ss.onclick=e=>{e.preventDefault();setStatus("កំពុងចាប់ផ្ដើម server សំឡេង…");vsc.postMessage({type:"startServer"});};
   }else{el.style.display="none";el.innerHTML="";}}
+// The voice switch and 🎤 stay in the toolbar at all times — disabled and
+// explained when the server is down or a key is missing, rather than vanishing.
+function renderVoiceControls(){
+  const sel=$("#voice"), ss=$("#sttsel"), mic=$("#mic");
+  sel.style.display=""; ss.style.display=""; mic.style.display="";
+
+  sel.disabled = !audioSources.length;
+  sel.innerHTML = audioSources.length
+    ? audioSources.map(v=>'<option value="'+v+'">'+(VOICE_META[v]||v)+'</option>').join("")
+    : '<option>សំឡេង — server បិទ</option>';
+  if(voice && audioSources.includes(voice)) sel.value=voice;
+  sel.title = audioSources.length ? "សំឡេង / Voice" : "server សំឡេងមិនដំណើរការ / audio server is not running";
+  sel.onchange=()=>{voice=sel.value; if(curWord) play(curWord,$("#spk"));};
+
+  ss.disabled = !stt;
+  ss.innerHTML = Object.keys(STT_META).map(e=>{
+    const have=sttSources.includes(e);
+    return '<option value="'+e+'"'+(have?"":" disabled")+'>'+STT_META[e]+(have?"":" — no key")+'</option>';
+  }).join("");
+  if(stt) ss.value=stt;
+  ss.onchange=()=>{ stt=ss.value; };
+
+  mic.disabled = !stt;
+  mic.title = stt ? ("ស្វែងរកដោយសំឡេង / Voice search ("+(STT_META[stt]||stt)+")")
+    : (audioSources.length ? "គ្មានកូនសោ STT / no speech-to-text key — see API_ACCESS.md"
+                           : "server សំឡេងមិនដំណើរការ / audio server is not running");
+}
+
 function probeHealth(){
   setStatus("កំពុងភ្ជាប់ server សំឡេង…");
   fetch(AUDIO+"/health",{cache:"no-store"}).then(r=>r.json()).then(j=>{
@@ -517,27 +678,15 @@ function probeHealth(){
     sttSources=j.stt||[];
     hostMic=!!j.mic;
     stt=sttSources.includes(CFG.sttEngine)?CFG.sttEngine:(sttSources[0]||null);
-    $("#mic").style.display = stt ? "" : "none";
-    const ss=$("#sttsel");
-    ss.style.display = stt ? "" : "none";
-    ss.innerHTML=Object.keys(STT_META).map(e=>{
-      const have=sttSources.includes(e);
-      return '<option value="'+e+'"'+(have?"":" disabled")+'>'+STT_META[e]+(have?"":" — no key")+'</option>';
-    }).join("");
-    if(stt) ss.value=stt;
-    ss.onchange=()=>{ stt=ss.value; };
+    voice=audioSources.includes(CFG.defaultVoice)?CFG.defaultVoice
+        :(audioSources.includes("sreymom")?"sreymom":audioSources[0]||null);
+    renderVoiceControls();
     if(!audioSources.length){setStatus("⚠ server សំឡេងគ្មានសំឡេង (no voices).");return;}
     setStatus(null);
-    voice=audioSources.includes(CFG.defaultVoice)?CFG.defaultVoice:(audioSources.includes("sreymom")?"sreymom":audioSources[0]);
-    const sel=$("#voice"); sel.style.display="";
-    sel.innerHTML=audioSources.map(v=>'<option value="'+v+'">'+(VOICE_META[v]||v)+'</option>').join("");
-    sel.value=voice;
-    sel.onchange=()=>{voice=sel.value; if(curWord) play(curWord,$("#spk"));};
     if(curWord) show(curWord,null);   // re-render to reveal 🔊 if a word is already open
   }).catch(()=>{
-    audioSources=[]; sttSources=[]; stt=null;
-    $("#voice").style.display="none"; $("#mic").style.display="none";
-    $("#sttsel").style.display="none";
+    audioSources=[]; sttSources=[]; stt=null; voice=null;
+    renderVoiceControls();
     setStatus("⚠ server សំឡេងមិនទាន់ដំណើរការ។ "+
       "<a href='#' id='startsrv'>▶ ចាប់ផ្ដើម server</a> &nbsp;|&nbsp; "+
       "<a href='#' id='retry'>ព្យាយាមម្ដងទៀត</a>");
@@ -550,6 +699,22 @@ async function play(word,btn,viaVoice){
   if(curAudio){curAudio.pause();curAudio=null;}
   document.querySelectorAll(".speak").forEach(b=>b.classList.remove("playing"));
   const use=viaVoice||voice;
+  const url=AUDIO+"/speak?voice="+encodeURIComponent(use)+"&word="+encodeURIComponent(word);
+  // Online: stream straight from the server, which caches the clip in
+  // audio.sqlite as it serves it. Offline or on error: fetch it instead, so the
+  // reason can be read out of the response.
+  if(navigator.onLine){
+    const a=new Audio(url); curAudio=a;
+    if(btn){btn.classList.add("playing"); a.onended=()=>btn.classList.remove("playing");}
+    a.onerror=()=>{ if(btn)btn.classList.remove("playing"); playBlob(word,btn,use); };
+    a.play().catch(()=>{ if(btn)btn.classList.remove("playing");
+      vsc.postMessage({type:"playHost", word:word, voice:use}); });   // no gesture: let the host play it
+    return;
+  }
+  return playBlob(word,btn,use);
+}
+
+async function playBlob(word,btn,use){
   let url;
   try{
     const r=await fetch(AUDIO+"/speak?voice="+encodeURIComponent(use)+"&word="+encodeURIComponent(word));
@@ -561,7 +726,7 @@ async function play(word,btn,viaVoice){
       const alt=audioSources.find(v=>v==="sreymom"||v==="piseth");
       if(alt&&alt!==use){
         setStatus("⚠ "+(VOICE_META[use]||use)+"៖ "+short+" — ប្រើ "+(VOICE_META[alt]||alt)+" ជំនួស។");
-        return play(word,btn,alt);
+        return playBlob(word,btn,alt);
       }
       setStatus("⚠ សំឡេង៖ "+short); return;
     }
@@ -570,73 +735,10 @@ async function play(word,btn,viaVoice){
   const a=new Audio(url); curAudio=a;
   if(btn){btn.classList.add("playing");
     a.onended=a.onerror=()=>{btn.classList.remove("playing");URL.revokeObjectURL(url);};}
-  a.play().catch(()=>{if(btn)btn.classList.remove("playing");});
+  a.play().catch(()=>{ if(btn)btn.classList.remove("playing");
+    URL.revokeObjectURL(url);
+    vsc.postMessage({type:"playHost", word:word, voice:use}); });
 }
-// ---- voice search: record here, transcribe on the server (/listen) ----
-(function(){
-  const mic=$("#mic"); let mr=null, chunks=[], recording=false, timer=null;
-  function setMic(st){ mic.classList.toggle("rec",st==="rec");
-    mic.textContent = st==="rec"?"⏺":st==="busy"?"…":"🎤"; mic.disabled = st==="busy"; }
-  async function send(blob){
-    setMic("busy");
-    try{
-      const r=await fetch(AUDIO+"/listen?engine="+encodeURIComponent(stt),
-        {method:"POST",body:blob,headers:{"Content-Type":blob.type||"audio/webm"}});
-      const j=await r.json();
-      if(!r.ok) throw new Error(j.error||("HTTP "+r.status));
-      const txt=(j.text||"").trim();
-      if(!txt){ setStatus("⚠ មិនឮពាក្យ (nothing recognised)."); return; }
-      setStatus(null); $("#q").value=txt; search(txt);
-    }catch(e){ setStatus("⚠ STT: "+e.message); }
-    finally{ setMic("idle"); }
-  }
-  // VS Code may not let a webview open the microphone. When it won't, ask the
-  // audio server to record on this machine instead (ffmpeg) — same transcript.
-  async function recordOnHost(){
-    setMic("rec"); setStatus("🎙 កំពុងថត… (recording " + CFG.recordSeconds + "s on the host)");
-    try{
-      const r=await fetch(AUDIO+"/record?seconds="+CFG.recordSeconds+"&engine="+encodeURIComponent(stt));
-      const j=await r.json();
-      if(!r.ok) throw new Error(j.error||("HTTP "+r.status));
-      const txt=(j.text||"").trim();
-      if(!txt){ setStatus("⚠ មិនឮពាក្យ (nothing recognised)."); return; }
-      setStatus(null); $("#q").value=txt; search(txt);
-    }catch(e){ setStatus("⚠ STT: "+e.message); }
-    finally{ setMic("idle"); }
-  }
-  mic.onclick=async()=>{
-    if(!stt) return;
-    if(recording){ clearTimeout(timer); mr&&mr.stop(); return; }
-    if(!navigator.mediaDevices || !window.MediaRecorder){ if(hostMic) return recordOnHost();
-      setStatus("⚠ មីក្រូហ្វូនមិនអាចប្រើបាន (no microphone in this webview, and the server has none either)."); return; }
-    let stream;
-    try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
-    catch(e){
-      if(hostMic) return recordOnHost();
-      setStatus("⚠ មីក្រូហ្វូន៖ "+e.message+" (VS Code must be allowed to use the microphone)"); return; }
-    chunks=[]; mr=new MediaRecorder(stream); recording=true; setMic("rec");
-    mr.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
-    mr.onstop=()=>{ recording=false; stream.getTracks().forEach(t=>t.stop());
-      const b=new Blob(chunks,{type:mr.mimeType||"audio/webm"});
-      if(b.size>1000) send(b); else setMic("idle"); };
-    mr.start(); timer=setTimeout(()=>{ if(recording) mr.stop(); },8000);
-    // stop ~0.8s after you stop talking instead of waiting for the cap
-    const AC=window.AudioContext||window.webkitAudioContext;
-    if(AC){ let ctx; try{ ctx=new AC(); }catch(e){ ctx=null; }
-      if(ctx){ const an=ctx.createAnalyser(); an.fftSize=1024;
-        ctx.createMediaStreamSource(stream).connect(an);
-        const buf=new Uint8Array(an.fftSize); let spoke=false, quiet=0;
-        (function tick(){
-          if(!recording){ try{ ctx.close(); }catch(e){} return; }
-          an.getByteTimeDomainData(buf);
-          let peak=0; for(let i=0;i<buf.length;i++){ const d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
-          const now=Date.now();
-          if(peak>6){ spoke=true; quiet=0; }
-          else if(spoke){ if(!quiet) quiet=now; else if(now-quiet>800){ clearTimeout(timer); mr.stop(); return; } }
-          setTimeout(tick,100);
-        })(); } }
-  };
-})();
 $("#q").addEventListener("input",e=>search(e.target.value));
 vsc.postMessage({type:"ready"});   // tell the extension the webview is loaded (deliver queued action)
 window.addEventListener("message",e=>{const d=e.data||{};
@@ -662,6 +764,16 @@ function runLookup(w){ if(!DICT) return;
 
 function activate(context) {
 	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider("khmerdict.view",
+			new KhmerDictViewProvider(context, "sidebar"),
+			{ webviewOptions: { retainContextWhenHidden: true } }),
+		vscode.window.registerWebviewViewProvider("khmerdict.panelView",
+			new KhmerDictViewProvider(context, "panel"),
+			{ webviewOptions: { retainContextWhenHidden: true } }),
+		vscode.commands.registerCommand("khmerdict.openSidebar", () =>
+			vscode.commands.executeCommand("khmerdict.view.focus")),
+		vscode.commands.registerCommand("khmerdict.openBottomPanel", () =>
+			vscode.commands.executeCommand("khmerdict.panelView.focus")),
 		vscode.commands.registerCommand("khmerdict.open", word =>
 			openPanel(context, typeof word === "string" ? word : undefined)),
 		vscode.commands.registerCommand("khmerdict.prev", word => stepWord(context, word, -1)),
@@ -731,6 +843,36 @@ function activate(context) {
 				vscode.window.showInformationMessage("Khmer Dictionary: audio server is running.");
 				if (panel && panelReady) { panel.webview.postMessage({ type: "reprobe" }); }
 			}
+		}),
+		vscode.commands.registerCommand("khmerdict.restartServer", async () => {
+			// Ask a server we did not start to restart itself; otherwise just
+			// respawn our own child process.
+			let asked = false;
+			try {
+				await new Promise((res, rej) => {
+					const u = new URL(audioBaseUrl() + "/restart");
+					const lib = u.protocol === "https:" ? https : http;
+					const req = lib.request({ hostname: u.hostname, port: u.port, path: u.pathname,
+						method: "POST", timeout: 2000 }, r => { r.resume(); res(); });
+					req.on("timeout", () => req.destroy(new Error("timeout")));
+					req.on("error", rej);
+					req.end();
+				});
+				asked = true;
+			} catch (e) { /* not running, or too old to know /restart */ }
+			if (!asked) { stopServer(); }
+			for (let i = 0; i < 20; i++) {
+				await sleep(500);
+				if (await serverReachable(800)) {
+					reprobeAll();
+					vscode.window.setStatusBarMessage("Khmer Dictionary: audio service restarted", 3000);
+					return;
+				}
+				if (i === 2 && !asked) { await ensureServer(true); }
+			}
+			const ok = await ensureServer(true);
+			if (ok) { reprobeAll(); }
+			else { vscode.window.showWarningMessage("Khmer Dictionary: the audio service did not come back."); }
 		}),
 		vscode.commands.registerCommand("khmerdict.stopServer", () => {
 			stopServer();

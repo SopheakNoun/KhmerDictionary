@@ -43,7 +43,6 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-import uuid
 import wave
 from datetime import datetime, timezone
 
@@ -67,9 +66,29 @@ except ImportError:
 # Khmer text in log output must not crash on a cp1252 Windows console.
 for _s in (sys.stdout, sys.stderr):
     try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
+        # line_buffering: when output goes to a file (the extension and the
+        # silent launcher both redirect it) block buffering would leave
+        # server.log empty for as long as the server runs.
+        _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
+
+# Started with pythonw.exe (the silent, console-less launcher) there is no
+# stdout at all: sys.stdout is None and the first print() would kill the
+# server. Log to a file in that case, so running silently still leaves a trace.
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _log = open(LOG_FILE, "a", encoding="utf-8", errors="replace", buffering=1)
+        sys.stdout = sys.stderr = _log
+    except Exception:
+        class _Null:
+            def write(self, *a):
+                pass
+
+            def flush(self):
+                pass
+        sys.stdout = sys.stderr = _Null()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DB = os.path.join(HERE, "audio.sqlite")
@@ -272,12 +291,10 @@ def content_type(data):
 #
 # engine -> (label, env/key name)
 STT_SOURCES = {
-    "whisper":    ("Whisper (local, no key)", ""),
-    "gemini":     ("Gemini", "GEMINI_API_KEY"),
-    "azure":      ("Microsoft Azure Speech", "AZURE_SPEECH_KEY"),
-    "google":     ("Google Cloud Speech-to-Text", "GOOGLE_STT_API_KEY"),
-    "elevenlabs": ("ElevenLabs Scribe", "ELEVENLABS_API_KEY"),
-    "assemblyai": ("AssemblyAI", "ASSEMBLYAI_API_KEY"),
+    "whisper": ("Whisper (local, no key)", ""),
+    "gemini":  ("Gemini", "GEMINI_API_KEY"),
+    "azure":   ("Microsoft Azure Speech", "AZURE_SPEECH_KEY"),
+    "google":  ("Google Cloud Speech-to-Text", "GOOGLE_STT_API_KEY"),
 }
 # A "lite" model answers a one-word transcription in ~2 s; the full flash model
 # took 10-23 s for the same clip, which is far too slow to feel like voice search.
@@ -473,55 +490,6 @@ def record_wav(seconds, device=None):
     return out.stdout, dev
 
 
-def _multipart(fields, filename, filedata, filefield="file", mime="audio/wav"):
-    """Minimal multipart/form-data body (no requests dependency)."""
-    crlf = chr(13) + chr(10)
-    b = uuid.uuid4().hex
-    q = chr(34)
-    out = b""
-    for k, v in fields.items():
-        head = ("--" + b + crlf + "Content-Disposition: form-data; name=" + q + k + q
-                + crlf + crlf + str(v) + crlf)
-        out += head.encode()
-    head = ("--" + b + crlf + "Content-Disposition: form-data; name=" + q + filefield + q
-            + "; filename=" + q + filename + q + crlf
-            + "Content-Type: " + mime + crlf + crlf)
-    out += head.encode() + filedata + (crlf + "--" + b + "--" + crlf).encode()
-    return out, "multipart/form-data; boundary=" + b
-
-
-def stt_elevenlabs(wav):
-    """ElevenLabs Scribe — one multipart POST, transcript comes straight back."""
-    body, ctype = _multipart(
-        {"model_id": os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1"),
-         "language_code": "khm"},
-        "clip.wav", wav)
-    j = _post_json("https://api.elevenlabs.io/v1/speech-to-text", body,
-                   {"xi-api-key": read_key("ELEVENLABS_API_KEY"), "Content-Type": ctype})
-    return (j.get("text") or "").strip()
-
-
-def stt_assemblyai(wav):
-    """AssemblyAI — upload, queue a transcript, then poll until it is done."""
-    key = read_key("ASSEMBLYAI_API_KEY")
-    up = _post_json("https://api.assemblyai.com/v2/upload", wav,
-                    {"authorization": key, "Content-Type": "application/octet-stream"})
-    job = _post_json("https://api.assemblyai.com/v2/transcript",
-                     json.dumps({"audio_url": up["upload_url"], "language_code": "km"}).encode(),
-                     {"authorization": key, "Content-Type": "application/json"})
-    url = f"https://api.assemblyai.com/v2/transcript/{job['id']}"
-    for _ in range(60):                      # short clips finish in a few seconds
-        req = urllib.request.Request(url, headers={"authorization": key})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            j = json.loads(r.read().decode("utf-8"))
-        if j.get("status") == "completed":
-            return (j.get("text") or "").strip()
-        if j.get("status") == "error":
-            raise RuntimeError(f"assemblyai: {j.get('error')}")
-        time.sleep(1)
-    raise RuntimeError("assemblyai: timed out waiting for the transcript")
-
-
 def transcribe(data, engine):
     wav = data if data[:4] == b"RIFF" else to_wav16k(data)
     if engine == "gemini":
@@ -530,10 +498,6 @@ def transcribe(data, engine):
         return stt_azure(wav)
     if engine == "google":
         return stt_google(wav)
-    if engine == "elevenlabs":
-        return stt_elevenlabs(wav)
-    if engine == "assemblyai":
-        return stt_assemblyai(wav)
     if engine == "whisper":
         return stt_whisper(wav)
     raise RuntimeError("unknown STT engine")
@@ -572,66 +536,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json(200, {"devices": list_audio_devices(), "using": MIC_DEVICE or None})
         return super().do_GET()
 
-    def handle_record(self, parsed):
-        q = urllib.parse.parse_qs(parsed.query)
-        engines = available_stt()
-        if not engines:
-            return self._json(503, {"error": "no speech-to-text engine configured — see API_ACCESS.md"})
-        engine = q.get("engine", [engines[0]])[0]
-        if engine not in engines:
-            return self._json(503, {"error": f"'{engine}' has no key configured"})
-        try:
-            seconds = max(1, min(15, int(q.get("seconds", ["4"])[0])))
-        except ValueError:
-            seconds = 4
-        try:
-            wav, dev = record_wav(seconds, q.get("device", [None])[0])
-            text = transcribe(wav, engine)
-        except Exception as e:
-            print(f"[record] FAIL {engine}: {e}")
-            return self._json(502, {"error": str(e)})
-        print(f"[record] {engine}: {text!r} ({seconds}s from {dev!r})")
-        return self._json(200, {"text": text, "engine": engine, "device": dev})
-
-    def do_OPTIONS(self):
-        # the extension webview preflights the /listen upload
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-
-    def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/listen":
-            return self.handle_listen(parsed)
-        return self._json(404, {"error": "not found"})
-
-    def handle_listen(self, parsed):
-        q = urllib.parse.parse_qs(parsed.query)
-        engines = available_stt()
-        if not engines:
-            return self._json(503, {"error": "no speech-to-text engine configured — see API_ACCESS.md"})
-        engine = q.get("engine", [engines[0]])[0]
-        if engine not in STT_SOURCES:
-            return self._json(400, {"error": "unknown STT engine"})
-        if engine not in engines:
-            return self._json(503, {"error": f"'{engine}' has no key configured"})
-
-        length = int(self.headers.get("Content-Length") or 0)
-        if not length:
-            return self._json(400, {"error": "empty recording"})
-        if length > 10 * 1024 * 1024:
-            return self._json(413, {"error": "recording too large (10 MB max)"})
-        data = self.rfile.read(length)
-
-        try:
-            text = transcribe(data, engine)
-        except Exception as e:
-            print(f"[listen] FAIL {engine}: {e}")
-            return self._json(502, {"error": str(e)})
-        print(f"[listen] {engine}: {text!r} ({length} bytes in)")
-        return self._json(200, {"text": text, "engine": engine})
-
     def handle_speak(self, parsed):
         q = urllib.parse.parse_qs(parsed.query)
         word = (q.get("word", [""])[0]).strip()
@@ -664,13 +568,134 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(mp3)
 
+    def handle_listen(self, parsed):
+        q = urllib.parse.parse_qs(parsed.query)
+        engines = available_stt()
+        if not engines:
+            return self._json(503, {"error": "no speech-to-text engine configured — see API_ACCESS.md"})
+        engine = q.get("engine", [engines[0]])[0]
+        if engine not in STT_SOURCES:
+            return self._json(400, {"error": "unknown STT engine"})
+        if engine not in engines:
+            return self._json(503, {"error": f"'{engine}' has no key configured"})
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return self._json(400, {"error": "empty recording"})
+        if length > 10 * 1024 * 1024:
+            return self._json(413, {"error": "recording too large (10 MB max)"})
+        data = self.rfile.read(length)
+
+        try:
+            text = transcribe(data, engine)
+        except Exception as e:
+            print(f"[listen] FAIL {engine}: {e}")
+            return self._json(502, {"error": str(e)})
+        print(f"[listen] {engine}: {text!r} ({length} bytes in)")
+        return self._json(200, {"text": text, "engine": engine})
+
+    def handle_record(self, parsed):
+        q = urllib.parse.parse_qs(parsed.query)
+        engines = available_stt()
+        if not engines:
+            return self._json(503, {"error": "no speech-to-text engine configured — see API_ACCESS.md"})
+        engine = q.get("engine", [engines[0]])[0]
+        if engine not in engines:
+            return self._json(503, {"error": f"'{engine}' has no key configured"})
+        try:
+            seconds = max(1, min(15, int(q.get("seconds", ["4"])[0])))
+        except ValueError:
+            seconds = 4
+        try:
+            wav, dev = record_wav(seconds, q.get("device", [None])[0])
+            text = transcribe(wav, engine)
+        except Exception as e:
+            print(f"[record] FAIL {engine}: {e}")
+            return self._json(502, {"error": str(e)})
+        print(f"[record] {engine}: {text!r} ({seconds}s from {dev!r})")
+        return self._json(200, {"text": text, "engine": engine, "device": dev})
+
+    def do_OPTIONS(self):
+        # the extension webview preflights the /listen upload
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/listen":
+            return self.handle_listen(parsed)
+        if parsed.path == "/restart":
+            return self.handle_restart()
+        return self._json(404, {"error": "not found"})
+
+    def handle_restart(self):
+        """Restart this server — the app's restart button.
+
+        Answers first, then asks the main loop to stop. main() then starts a
+        fresh process and exits. Doing the respawn here would not work: closing
+        the listener ends serve_forever(), the process exits, and this thread
+        dies before it could spawn anything.
+        """
+        global _restart_requested
+        self._json(200, {"restarting": True, "pid": os.getpid()})
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
+        _restart_requested = True
+
+        def stop():
+            time.sleep(0.4)          # let the response land
+            for srv in list(_servers):
+                try:
+                    srv.shutdown()
+                except Exception:
+                    pass
+
+        threading.Thread(target=stop, daemon=True).start()
+
 
 class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    # HTTPServer sets this to 1, which on Windows lets a SECOND server bind the
+    # same port: two processes then answer at random. Refusing the bind makes a
+    # duplicate start fail loudly instead.
+    allow_reuse_address = False
 
 
 class ThreadingServer6(ThreadingServer):
     address_family = socket.AF_INET6
+
+
+_servers = []              # listening sockets, so /restart can close them
+_restart_requested = False # set by /restart, acted on by main()
+RESTART_LOG = LOG_FILE      # the replacement appends to the same log
+
+
+def silent_python():
+    """pythonw.exe runs without a console window; fall back if it is missing."""
+    exe = sys.executable
+    if os.name == "nt":
+        cand = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def respawn():
+    """Start a fresh server process, detached from this one.
+
+    Its stdout must go somewhere real: a detached process on Windows has no
+    console, and the first print() would kill it."""
+    log = open(RESTART_LOG, "ab", buffering=0)   # server.log, appended
+    kwargs = {"cwd": HERE, "stdout": log, "stderr": log, "stdin": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([silent_python(), os.path.abspath(__file__)] + sys.argv[1:], **kwargs)
 
 
 def serve_loopback():
@@ -680,17 +705,52 @@ def serve_loopback():
     socket bound, every request pays ~2 s waiting for the IPv6 attempt to fail
     before falling back — which made each /speak and /listen feel broken.
     """
-    v4 = ThreadingServer(("127.0.0.1", PORT), Handler)
+    try:
+        v4 = ThreadingServer(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        # The startup probe found the port free, but somebody else bound it in
+        # the moment since — the launcher and the VS Code extension starting
+        # together, say. One server is all we want: let the winner have it.
+        print(f"Port {PORT} was taken while starting ({e.__class__.__name__}) — "
+              f"another audio server won the race; exiting.", flush=True)
+        return
+    _servers.append(v4)
     try:
         v6 = ThreadingServer6(("::1", PORT), Handler)
+        _servers.append(v6)
         threading.Thread(target=v6.serve_forever, daemon=True).start()
     except OSError as e:
-        print(f"  (no IPv6 listener: {e}; use http://127.0.0.1:{PORT} to avoid a slow lookup)")
-    v4.serve_forever()
+        print(f"  (no IPv6 listener: {e}; use http://127.0.0.1:{PORT} to avoid a slow lookup)",
+              flush=True)
+    v4.serve_forever()          # returns when /restart asks us to stop
+    for srv in _servers:
+        try:
+            srv.shutdown()      # stops the v6 thread before its socket closes
+        except Exception:
+            pass
+    time.sleep(0.2)
+    for srv in _servers:
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+    if _restart_requested:
+        print(f"[restart] listeners closed; starting a fresh server "
+              f"(its log: {RESTART_LOG})", flush=True)
+        time.sleep(0.3)         # let the port drop before the child binds
+        respawn()
 
 
 def main():
     init_db()
+    try:
+        _probe = socket.create_connection(("127.0.0.1", PORT), 0.5)
+        _probe.close()
+        sys.exit(f"A server is already listening on port {PORT} — "
+                 f"nothing to do (use /restart to replace it).")
+    except OSError:
+        pass                      # nothing there: carry on and bind it
+
     print(f"Khmer Dictionary server on http://127.0.0.1:{PORT}  (and http://localhost:{PORT})")
     print(f"  edge-tts (Microsoft): {'yes' if EDGE_OK else 'NO (pip install edge-tts)'}")
     print(f"  gTTS (Google):        {'yes' if GTTS_OK else 'NO (pip install gTTS)'}")

@@ -54,16 +54,27 @@ server serves them as `audio/wav`.
 
 ## Step 2 — Start with audio
 
-Double-click **`start_with_audio.bat`** (it runs `server.py` and opens the browser), or from
-PowerShell in the folder:
+Double-click **`start_with_audio.bat`**. It starts the server **silently** — no console window —
+and opens the browser; the launcher window closes itself. Stop it again with **`stop_audio.bat`**.
+In VS Code you need neither: the extension starts the same server (also silently) when the
+dictionary opens.
+
+Silence comes from `pythonw.exe`, Python's console-less launcher, so there is nothing to print to:
+the startup banner and every `[speak]` / `[listen]` line go to **`server.log`** beside `server.py`.
+
+To watch it live instead, run it in a terminal yourself:
 
 ```powershell
 python server.py
-# then open http://localhost:8777
+# then open http://127.0.0.1:8777
 ```
 
-The server prints which engines it found and the available voices. If neither engine is installed,
-the dictionary still runs — the 🔊 / voice controls just stay hidden.
+The server reports which engines it found and the available voices. If no engine is installed the
+dictionary still runs — the 🔊 / 🎤 controls simply stay disabled.
+
+Prefer `127.0.0.1` over `localhost`: Windows resolves the name to IPv6 first, and a request can sit
+~2 s waiting for that to fail. The server listens on both, and every launcher now uses the numeric
+form.
 
 That's it. Click a word, press 🔊. The first press for a new word takes ~1 second (synthesizing and
 saving); after that it's instant from `audio.sqlite`.
@@ -83,6 +94,23 @@ Concurrency defaults to 12, or 4 when a Gemini voice is included (`--concurrency
 quota errors get a long backoff, and anything still failing is picked up on the next run.
 It fills the same `audio.sqlite`, runs requests concurrently, and skips anything already cached, so
 it's safe to stop and resume. (18,729 words × 3 voices ≈ 56k clips — a couple of hours in one go.)
+
+---
+
+## Playing a word
+
+Click 🔊 (or turn on ▶ autoplay, which speaks each word as you open it).
+
+- **Online** the app plays the server URL **directly**: the clip streams as it arrives and the
+  server stores it in `audio.sqlite` on the way past. Fastest to start, and it fills the cache.
+- **Offline, or if that fails**, the app fetches the clip instead and plays it from a blob. Slower
+  to start, but the response body can be read — so a provider that is refusing requests produces a
+  message ("Gemini out of quota") and an automatic fall back to a Microsoft voice, rather than
+  silence.
+- Once a word is cached, both routes work with **no network at all**.
+
+Other controls: 🔇 mutes everything (panel and hover), ⟳ restarts the audio service, and in VS Code
+one button moves the dictionary between the sidebar, the bottom panel and an editor tab.
 
 ---
 

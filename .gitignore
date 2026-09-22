@@ -10,6 +10,10 @@ data.sqlite
 *.wav
 *.mp3
 
+# --- runtime logs ---
+server.log
+server_restart.log
+
 # --- build output: keep the source, not every packaged build ---
 vscode-extension/*.vsix
 node_modules/

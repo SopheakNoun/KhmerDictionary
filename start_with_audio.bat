@@ -1,14 +1,17 @@
 @echo off
-REM Launch the Khmer Dictionary WITH pronunciation audio.
+REM Launch the Khmer Dictionary WITH pronunciation audio — silently.
 REM
-REM Audio uses edge-tts (Microsoft, ♀/♂) and gTTS (Google, single voice) —
-REM NO API KEY, but needs internet. First time only, install them:
-REM     python -m pip install edge-tts gTTS
+REM The server runs under pythonw.exe, so NO console window appears: it starts
+REM in the background, the browser opens, and this window closes itself.
+REM Everything it would have printed goes to server.log next to server.py.
 REM
-REM The server generates each word on first click and caches it in audio.sqlite,
-REM so later clicks are instant and offline.
+REM Audio uses edge-tts (Microsoft, female/male) and gTTS (Google, one voice) —
+REM no API key, but internet is needed until a word is cached. Voice search and
+REM the Gemini voices need a key; see API_ACCESS.md. First time only:
+REM     python -m pip install edge-tts gTTS google-genai
+REM
+REM To stop it:  stop_audio.bat
 
 cd /d "%~dp0"
-echo Starting Khmer Dictionary (with audio) at http://127.0.0.1:8777 ...
-start "" "http://127.0.0.1:8777/index.html"
-python server.py
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0audio_service.ps1"
+exit

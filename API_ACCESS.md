@@ -19,8 +19,6 @@ Contents: [At a glance](#at-a-glance) · [Where keys live](#where-keys-live) ·
 | **Google Cloud TTS** | ✕ **no Khmer voice** | — | yes | Don't plan around it for Khmer. |
 | **Google Cloud STT** | — | ✅ `km-KH` | yes | v1 REST accepts a plain API key. |
 | **Gemini (AI Studio)** | ✅ ♀ Kore, ♂ Puck + others | ✅ any audio-capable model | yes | Google's only **gendered** Khmer pair. Metered. |
-| **ElevenLabs Scribe** | — | ✅ Khmer (`khm`) | yes | One multipart POST; transcript returns immediately. |
-| **AssemblyAI** | — | ✅ Khmer (`km`) | yes | Upload, queue, poll — a few seconds for short clips. |
 
 Only Microsoft (both flavours) and Gemini give a **male and a female** Khmer voice.
 
@@ -41,8 +39,6 @@ GEMINI_API_KEY=...          # Gemini TTS voices + Gemini STT
 AZURE_SPEECH_KEY=...        # Azure Speech (STT here; TTS optional)
 AZURE_SPEECH_REGION=...     # e.g. southeastasia — required with the Azure key
 GOOGLE_STT_API_KEY=...      # Google Cloud Speech-to-Text
-ELEVENLABS_API_KEY=...      # ElevenLabs Scribe (STT)
-ASSEMBLYAI_API_KEY=...      # AssemblyAI (STT)
 MIC_DEVICE=...              # optional: which mic the server records from
 ```
 
@@ -248,59 +244,6 @@ print(r.text)
 
 ---
 
-## ElevenLabs Scribe
-
-Key: <https://elevenlabs.io> → your profile → **API keys** → `ELEVENLABS_API_KEY`. One request does
-everything — multipart upload in, transcript out:
-
-```
-POST https://api.elevenlabs.io/v1/speech-to-text
-xi-api-key: {key}
-Content-Type: multipart/form-data
-
-model_id=scribe_v1
-language_code=khm
-file=@clip.wav
-
--> {"text":"ភាសាខ្មែរ", "language_code":"khm", ...}
-```
-
-Override the model with `$env:ELEVENLABS_STT_MODEL`.
-
----
-
-## AssemblyAI
-
-Key: <https://www.assemblyai.com> → dashboard → `ASSEMBLYAI_API_KEY`. Three steps, because
-transcription is queued:
-
-```
-POST https://api.assemblyai.com/v2/upload          (raw bytes, header: authorization: {key})
-  -> {"upload_url": "..."}
-POST https://api.assemblyai.com/v2/transcript      {"audio_url": "...", "language_code": "km"}
-  -> {"id": "..."}
-GET  https://api.assemblyai.com/v2/transcript/{id} until status == "completed"
-  -> {"text": "ភាសាខ្មែរ", ...}
-```
-
-The server polls once a second for up to a minute, which is ample for a single word.
-
----
-
-## Not usable: HamsterAI / AiMouse (`C:\HamsterAI`)
-
-Worth recording so it isn't re-investigated. That folder is the **AiMouse** desktop app (v1.0.8,
-"Hamster" channel), licensed to one device (`License.dat`, `sn`/`vid`/`pid` in `custom.ini`). Its
-recognition is not local — it posts to a private backend, `https://att.miclink.net/api/xfws`, with
-iFlytek's `msc.dll` underneath. There is **no public API, no documentation and no key mechanism**:
-using it from another program would mean reverse-engineering that endpoint and presenting the
-device's licence, so it is not wired in. Its own `languages.ini` lists the recognition backends it
-can drive (`xf` iFlytek, `ms` Microsoft, `google`, `ncs`, `sh`, `miclink`) and **none of those
-language lists contain Khmer**. The same engines are reachable here properly: Azure Speech and
-Google Cloud STT, with your own keys.
-
----
-
 ## How this project uses them
 
 ### Endpoints of the local server (`server.py`, default <http://localhost:8777>)
@@ -310,10 +253,27 @@ Google Cloud STT, with your own keys.
 | `GET /health` | `{"sources": [...voices...], "stt": [...engines...]}` — what's configured right now. |
 | `GET /speak?word=<km>&voice=<v>` | Khmer audio. `v` = `sreymom` \| `piseth` \| `google` \| `kore` \| `puck`. Synthesized once, then served from `audio.sqlite`. |
 | `POST /listen?engine=<e>` | Body = a recorded audio clip (any format ffmpeg reads). `e` = `gemini` \| `azure` \| `google`. Returns `{"text": "...", "engine": "..."}`. |
+| `GET /record?seconds=4&engine=<e>` | Records from **this machine's** microphone with ffmpeg and transcribes it. For clients that cannot open a microphone themselves — a VS Code webview may be denied `getUserMedia`. |
+| `GET /devices` | The capture devices ffmpeg can see, and which one is configured (`MIC_DEVICE`). |
+| `POST /restart` | Restarts the service: closes the listeners, starts a fresh process, exits. The ⟳ button in both apps. |
 
 `/listen` converts the upload to 16 kHz mono WAV with ffmpeg before sending it on, so the browser
 can record in whatever format it likes (Chrome gives WebM/Opus). Clips are capped at 10 MB and are
 **not** stored — only the transcript is returned.
+
+There is also a keyless local engine, **Whisper** (`faster-whisper`), left **off** by default: set
+`WHISPER_STT=1` to offer it. Tested here, Whisper `small` transcribed Khmer as Sinhala and
+Devanagari nonsense, and only `large-v3` (~3 GB) is worth trying, so it is not a serious option for
+Khmer today.
+
+### Running silently
+
+`server.py` normally runs under **`pythonw.exe`** — Python with no console window — started either
+by `start_with_audio.bat` or by the VS Code extension. There is then no stdout to print to, so the
+server logs to **`server.log`** beside itself. Only ever one instance runs: the launchers probe the
+port first, the server probes it at startup, and the listening socket sets
+`allow_reuse_address = False`, so a genuine race ends with the loser exiting
+("another audio server won the race").
 
 ### Voice search in the apps
 
