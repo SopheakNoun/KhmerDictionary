@@ -2,7 +2,7 @@
   "name": "khmer-dictionary",
   "displayName": "Khmer Dictionary (Chuon Nath)",
   "description": "Look up Khmer words from the Chuon Nath dictionary — search panel, hover definitions, and look-up on selection.",
-  "version": "1.26.0",
+  "version": "1.28.0",
   "publisher": "camgsm",
   "engines": {
     "vscode": "^1.75.0"

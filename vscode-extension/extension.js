@@ -19,7 +19,7 @@ function serverReachable(timeoutMs) {
 		.then(() => true).catch(() => false);
 }
 async function ensureServer(notify) {
-	if (await serverReachable(800)) { return true; }              // already up (ours or theirs)
+	if (await serverReachable(3000)) { return true; }              // already up (ours or theirs)
 	const cfg = vscode.workspace.getConfiguration("khmerDictionary");
 	const script = cfg.get("serverScriptPath");
 	const py = cfg.get("pythonPath") || "python";
@@ -51,7 +51,7 @@ async function ensureServer(notify) {
 	}
 	for (let i = 0; i < 16; i++) {           // wait up to ~8s for it to come up
 		await sleep(500);
-		if (await serverReachable(800)) { return true; }
+		if (await serverReachable(3000)) { return true; }
 	}
 	if (notify) { vscode.window.showErrorMessage("Khmer Dictionary: audio server did not start (check Python / serverScriptPath)."); }
 	return false;
@@ -88,19 +88,39 @@ function playViaHost(word, voice) {
 		file.on("finish", () => file.close(() => playFile(tmp)));
 	}).on("error", e => vscode.window.showErrorMessage("Khmer Dictionary: audio fetch failed — " + e.message));
 }
+// Play a downloaded clip through the OS.
+//
+// NOT with WPF's MediaPlayer: it needs a running Dispatcher, and from a
+// background PowerShell it never even opens the file — MediaOpened never
+// fires, HasAudio stays false, and nothing is heard. It failed silently.
+// ffplay decodes and plays the same clip correctly, so prefer it.
 function playFile(tmp) {
+	const done = () => { try { fs.unlinkSync(tmp); } catch (e) { /* keep it */ } };
 	try {
-		if (process.platform === "win32") {
-			const ps = "Add-Type -AssemblyName presentationCore;" +
-				"$p=New-Object System.Windows.Media.MediaPlayer;" +
-				"$p.Open([uri]'" + tmp.replace(/'/g, "''") + "');$p.Play();Start-Sleep -Seconds 6";
-			cp.spawn("powershell.exe", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
-				{ windowsHide: true, stdio: "ignore" });
-		} else {
-			const bin = process.platform === "darwin" ? "afplay" : "ffplay";
-			cp.spawn(bin, bin === "ffplay" ? ["-nodisp", "-autoexit", tmp] : [tmp], { stdio: "ignore" });
+		if (process.platform === "darwin") {
+			cp.spawn("afplay", [tmp], { stdio: "ignore" }).on("exit", done);
+			return;
 		}
-	} catch (e) { vscode.window.showErrorMessage("Khmer Dictionary: could not play audio — " + e.message); }
+		const player = cp.spawn("ffplay", ["-nodisp", "-autoexit", "-loglevel", "error", tmp],
+			{ stdio: "ignore", windowsHide: true });
+		player.on("exit", done);
+		player.on("error", () => {
+			// no ffplay on PATH
+			if (process.platform === "win32") { playFileFallback(tmp); }
+			else { cp.spawn("aplay", [tmp], { stdio: "ignore" }).on("exit", done); }
+		});
+	} catch (e) {
+		vscode.window.showErrorMessage("Khmer Dictionary: could not play audio — " + e.message);
+	}
+}
+
+// Last resort on Windows without ffmpeg: hand the file to whatever is
+// registered for it. Opens an app, so it is only used when nothing else works.
+function playFileFallback(tmp) {
+	vscode.window.showWarningMessage(
+		"Khmer Dictionary: ffplay (part of ffmpeg) was not found on PATH — " +
+		"install ffmpeg for in-place playback.");
+	cp.spawn("cmd", ["/c", "start", "", tmp], { windowsHide: true, stdio: "ignore" });
 }
 
 // GET a URL and parse JSON, using Node's http module (no dependency on a global
@@ -108,7 +128,7 @@ function playFile(tmp) {
 function httpGetJson(url, timeoutMs) {
 	return new Promise((resolve, reject) => {
 		const lib = url.startsWith("https") ? https : http;
-		const req = lib.get(url, { timeout: timeoutMs || 1500 }, res => {
+		const req = lib.get(url, { timeout: timeoutMs || 3000 }, res => {
 			let data = "";
 			res.on("data", c => { data += c; });
 			res.on("end", () => {
@@ -152,7 +172,7 @@ let health = { sources: [], ts: 0 };
 async function getAudioSources() {
 	if (Date.now() - health.ts < 10000) { return health.sources; }
 	try {
-		const j = await httpGetJson(audioBaseUrl() + "/health", 1200);
+		const j = await httpGetJson(audioBaseUrl() + "/health", 3000);
 		health = { sources: j.sources || [], ts: Date.now() };
 	} catch (e) {
 		health = { sources: [], ts: Date.now() };
@@ -863,7 +883,7 @@ function activate(context) {
 			if (!asked) { stopServer(); }
 			for (let i = 0; i < 20; i++) {
 				await sleep(500);
-				if (await serverReachable(800)) {
+				if (await serverReachable(3000)) {
 					reprobeAll();
 					vscode.window.setStatusBarMessage("Khmer Dictionary: audio service restarted", 3000);
 					return;

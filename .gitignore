@@ -20,3 +20,4 @@ node_modules/
 __pycache__/
 *.pyc
 .vscode-test/
+audio_gen_*.log
