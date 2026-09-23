@@ -22,6 +22,21 @@ Contents: [At a glance](#at-a-glance) · [Where keys live](#where-keys-live) ·
 
 Only Microsoft (both flavours) and Gemini give a **male and a female** Khmer voice.
 
+### Summary — what is free and what needs a key
+
+1. **TTS (text → speech) works free, with no key, from both Microsoft and Google.**
+   - **Microsoft (edge-tts)** — ♀ Sreymom / ♂ Piseth. Reliable; every headword is pre-generated.
+   - **Google (gTTS)** — the most accurate Khmer **pronunciation** of the free voices, but its
+     bottleneck is the **rate limit**: Google Translate throttles by IP and answers
+     `429 Too Many Requests` (seen 2026-09-23). When that happens both apps fall back to the
+     Microsoft voice automatically. Words already in `audio.sqlite` still play, since only new
+     words hit Google.
+2. **STT (speech → text) has no free server option: it needs an API key.** Google Cloud STT,
+   Gemini and Azure Speech all require one in `api_keys.txt` (see [Where keys live](#where-keys-live)).
+   The only keyless paths are limited: the browser's Web Speech API works in the **web app on
+   Chrome/Edge only** (not in the VS Code panel), and local Whisper needs `WHISPER_STT=1` plus a
+   large model.
+
 ---
 
 ## Where keys live
@@ -290,7 +305,9 @@ bound. They rank the engines; they do not predict accuracy on a real voice.
 | `GET /health` | `{"sources": [...voices...], "stt": [...engines...]}` — what's configured right now. |
 | `GET /speak?word=<km>&voice=<v>` | Khmer audio. `v` = `sreymom` \| `piseth` \| `google` \| `kore` \| `puck`. Synthesized once, then served from `audio.sqlite`. |
 | `POST /listen?engine=<e>` | Body = a recorded audio clip (any format ffmpeg reads). `e` = `gemini` \| `azure` \| `google`. Returns `{"text": "...", "engine": "..."}`. |
-| `GET /record?seconds=4&engine=<e>` | Records from **this machine's** microphone with ffmpeg and transcribes it. For clients that cannot open a microphone themselves — a VS Code webview may be denied `getUserMedia`. |
+| `POST /record/start` | Starts recording **this machine's** microphone with ffmpeg; answers once the mic is live. For clients that cannot open a microphone themselves — a VS Code webview may be denied `getUserMedia`. One session at a time, 30 s cap. |
+| `POST /record/stop?engine=<e>` | Ends that recording and transcribes it: `{"text", "engine", "device"}` (`"short": true` for under 0.5 s). `POST /record/cancel` discards it. |
+| `GET /record?seconds=4&engine=<e>` | Fixed-length variant of the above, kept for scripts. |
 | `GET /devices` | The capture devices ffmpeg can see, and which one is configured (`MIC_DEVICE`). |
 | `POST /restart` | Restarts the service: closes the listeners, starts a fresh process, exits. The ⟳ button in both apps. |
 
@@ -321,8 +338,11 @@ port first, the server probes it at startup, and the listening socket sets
   (`G✦` Gemini, `MS` Azure, `GC` Google Cloud) and cycles between them; the choice is remembered.
 - **VS Code extension** — the 🎤 button in the panel toolbar does the same against the audio server,
   with a dropdown beside it when more than one engine is configured. `khmerDictionary.sttEngine`
-  sets which one is selected by default. VS Code must be allowed to use the microphone; if it
-  isn't, the panel shows the permission error rather than failing silently.
+  sets which one is selected by default. If VS Code refuses the webview the microphone, the panel
+  records through the audio server instead (`/record/start` … `/record/stop`).
+- **Both** — hold 🎤 and release to stop, or tap to start and tap again to stop. **Ctrl+Alt+M**
+  (Voice Search) works the same way from anywhere in VS Code: press once to start, again — or
+  click the red status-bar item — to stop.
 
 All three engines are wired and their requests verified against the live services: with a
 deliberately wrong key Azure answers `401` and Google answers `API key not valid`, i.e. the URL,

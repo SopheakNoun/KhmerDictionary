@@ -62,6 +62,7 @@
 	.iconbtn{border:0;background:rgba(255,255,255,.15);color:#fff;width:38px;height:38px;
 		border-radius:9px;cursor:pointer;font-size:17px;flex:none}
 	.iconbtn:hover{background:rgba(255,255,255,.28)}
+	#micBtn{touch-action:none;user-select:none;-webkit-user-select:none}
 	.iconbtn.listening{background:#fff;color:var(--accent);animation:pulse 1s ease-in-out infinite}
 	#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:60;max-width:90vw;
 		background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;
@@ -579,17 +580,30 @@ function sttList(){
 	const all=(SR?["browser"]:[]).concat(sttSources);
 	return all.filter(e=>STT_FREE.includes(e)).concat(all.filter(e=>!STT_FREE.includes(e)));
 }
-let stt=null;                      // chosen engine
-try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
+let stt=null;                      // engine in use
+// The engine you picked, kept apart from `stt`: the first updateMicBtn() runs
+// before /health has listed the keyed engines, and resetting the choice to
+// what was available *then* silently sent every reload back to Web Speech.
+let sttWant=null;
+try{ sttWant=localStorage.getItem("kmdict-stt"); }catch(e){}
 
 (function(){
 	const micBtn=$("#micBtn");
-	let mediaRec=null, chunks=[], recording=false, stopTimer=null;
+	// Recording lasts exactly as long as you want it to: hold the button and
+	// let go when you have said the word, or tap once to start and tap again to
+	// stop. (It used to stop itself 0.8 s after the level dropped, which cut
+	// words with a pause in them, and a stray noise kept it running to the cap.)
+	const HOLD_MS=400;                // a press longer than this is push-to-talk
+	const MAX_MS=30000;               // safety cap if a stop never comes
+	let phase="idle";                 // idle | starting | rec | busy
+	let stopAsked=false, capTimer=null, active=null;
 
-	function setMic(state){         // "idle" | "rec" | "busy"
-		micBtn.classList.toggle("listening", state==="rec");
-		micBtn.textContent = state==="rec" ? "⏺" : state==="busy" ? "…" : "🎤";
+	function setMic(state){
+		phase=state;
+		micBtn.classList.toggle("listening", state==="rec"||state==="starting");
+		micBtn.textContent = state==="rec"||state==="starting" ? "⏺" : state==="busy" ? "…" : "🎤";
 		micBtn.disabled = state==="busy";
+		if(state==="rec") micBtn.title="កំពុងថត — លែងប៊ូតុង ឬចុចម្ដងទៀតដើម្បីបញ្ឈប់ (release or click again to stop)";
 	}
 
 	async function sendClip(blob){
@@ -610,96 +624,109 @@ try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
 		}finally{ setMic("idle"); }
 	}
 
-	async function recordAndSend(){
-		if(recording){ clearTimeout(stopTimer); mediaRec && mediaRec.stop(); return; }
-		let stream;
-		try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
-		catch(e){ micBtn.title="សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន"; return; }
-		chunks=[];
-		mediaRec=new MediaRecorder(stream);
-		mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
-		mediaRec.onstop=()=>{
-			recording=false;
-			stream.getTracks().forEach(t=>t.stop());
-			const blob=new Blob(chunks,{type:mediaRec.mimeType||"audio/webm"});
-			if(blob.size>1000) sendClip(blob); else setMic("idle");
-		};
-		mediaRec.start();
-		recording=true;
+	// server engines: record the clip here, POST it to /listen
+	const recorder={
+		mr:null,
+		async begin(){
+			let stream;
+			try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+			catch(e){ throw new Error("សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន"); }
+			const chunks=[], mr=new MediaRecorder(stream);
+			mr.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+			mr.onstop=()=>{
+				stream.getTracks().forEach(t=>t.stop());
+				const blob=new Blob(chunks,{type:mr.mimeType||"audio/webm"});
+				if(blob.size>1000) sendClip(blob);
+				else{ setMic("idle"); micBtn.title="ខ្លីពេក — សង្កត់ឲ្យយូរជាងនេះ (too short)"; }
+			};
+			mr.start();
+			this.mr=mr;
+		},
+		end(){ setMic("busy"); this.mr.stop(); }
+	};
+
+	// engine "browser": the Web Speech API (Chrome/Edge, km-KH). continuous, so
+	// a pause between syllables does not end it — only the release/second click.
+	const browserSR={
+		rec:null,
+		begin(){
+			return new Promise((resolve,reject)=>{
+				const rec=new SR(); this.rec=rec;
+				rec.lang="km-KH"; rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
+				let started=false;
+				rec.onstart=()=>{ started=true; resolve(); };
+				rec.onresult=e=>{
+					let txt=""; for(const r of e.results) txt+=r[0].transcript;
+					txt=txt.trim();
+					qInput.value=txt;
+					clearBtn.style.display = txt ? "block":"none";
+					search(txt);
+				};
+				rec.onerror=e=>{
+					const msg = e.error==="not-allowed"||e.error==="service-not-allowed"
+						? "សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន" : "កំហុសសំឡេង៖ "+e.error;
+					if(!started) reject(new Error(msg)); else micBtn.title=msg;
+				};
+				rec.onend=()=>{ clearTimeout(capTimer); if(started) setMic("idle"); };
+				try{ rec.start(); }catch(err){ reject(err); }
+			});
+		},
+		end(){ setMic("busy"); this.rec.stop(); }   // final results arrive, then onend
+	};
+
+	async function begin(){
+		if(phase!=="idle") return;
+		stopAsked=false;
+		setMic("starting");
+		// route on the chosen engine: "browser" stays in the page, the rest POST
+		const eng = stt==="browser" || !sttSources.includes(stt) ? browserSR : recorder;
+		try{ await eng.begin(); }
+		catch(e){ setMic("idle"); micBtn.title=e.message||String(e); return; }
+		active=eng;
 		setMic("rec");
-		stopTimer=setTimeout(()=>{ if(recording) mediaRec.stop(); }, 8000);  // hard cap
-		autoStopOnSilence(stream);   // …but normally we stop as soon as you stop talking
+		capTimer=setTimeout(end, MAX_MS);
+		if(stopAsked) end();          // released while the mic was still opening
+	}
+	function end(){
+		if(phase==="starting"){ stopAsked=true; return; }
+		if(phase!=="rec") return;
+		clearTimeout(capTimer);
+		micBtn.title="ស្វែងរកដោយសំឡេង ("+(STT_LABEL[stt]||stt)+")";
+		active.end();
 	}
 
-	// Watch the input level and end the recording ~0.8 s after speech stops, so a
-	// one-word search doesn't wait for the cap. Falls back to the cap if the
-	// browser has no AudioContext.
-	function autoStopOnSilence(stream){
-		const AC = window.AudioContext || window.webkitAudioContext;
-		if(!AC) return;
-		let ctx;
-		try{ ctx=new AC(); }catch(e){ return; }
-		const an=ctx.createAnalyser(); an.fftSize=1024;
-		ctx.createMediaStreamSource(stream).connect(an);
-		const buf=new Uint8Array(an.fftSize);
-		let spoke=false, quietSince=0;
-		(function tick(){
-			if(!recording){ try{ ctx.close(); }catch(e){} return; }
-			an.getByteTimeDomainData(buf);
-			let peak=0;
-			for(let i=0;i<buf.length;i++){ const d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
-			const loud = peak > 6;                       // ~5% of full scale
-			const now = Date.now();
-			if(loud){ spoke=true; quietSince=0; }
-			else if(spoke){
-				if(!quietSince) quietSince=now;
-				else if(now-quietSince > 800){ clearTimeout(stopTimer); mediaRec.stop(); return; }
-			}
-			setTimeout(tick, 100);
-		})();
-	}
-
-	// ---- the browser's own recogniser (Chrome/Edge, km-KH), engine "browser" ----
-	let rec=null, listening=false;
-	function browserSR(){
-		if(listening){ if(rec) rec.stop(); return; }
-		rec = new SR();
-		rec.lang = "km-KH";
-		rec.interimResults = true;
-		rec.maxAlternatives = 1;
-		rec.onstart = ()=>{ listening=true; micBtn.classList.add("listening"); micBtn.textContent="⏺"; };
-		rec.onresult = e=>{
-			let txt=""; for(const r of e.results) txt+=r[0].transcript;
-			txt=txt.trim();
-			qInput.value=txt;
-			clearBtn.style.display = txt ? "block":"none";
-			search(txt);
-		};
-		rec.onerror = e=>{
-			micBtn.title = e.error==="not-allowed"||e.error==="service-not-allowed"
-				? "សូមអនុញ្ញាតឲ្យប្រើមីក្រូហ្វូន" : "កំហុសសំឡេង៖ "+e.error;
-		};
-		rec.onend = ()=>{ listening=false; micBtn.classList.remove("listening"); micBtn.textContent="🎤"; };
-		try{ rec.start(); }
-		catch(err){ listening=false; micBtn.classList.remove("listening"); micBtn.textContent="🎤"; }
-	}
-
-	// route on the chosen engine: "browser" stays in the page, the rest POST
-	micBtn.onclick=()=> stt==="browser" ? browserSR()
-		: (sttSources.includes(stt) ? recordAndSend() : browserSR());
+	// press starts; release stops if it was a hold, otherwise the next press stops
+	let pressAt=0, pressStarted=false;
+	micBtn.addEventListener("pointerdown",e=>{
+		if(e.button!==0 || micBtn.disabled) return;
+		e.preventDefault();
+		try{ micBtn.setPointerCapture(e.pointerId); }catch(_){}
+		if(phase==="starting"||phase==="rec"){ pressStarted=false; end(); return; }
+		pressAt=Date.now(); pressStarted=true; begin();
+	});
+	const release=()=>{
+		if(!pressStarted) return;
+		pressStarted=false;
+		if(Date.now()-pressAt>=HOLD_MS) end();
+	};
+	micBtn.addEventListener("pointerup",release);
+	micBtn.addEventListener("pointercancel",release);
+	// keyboard (Space/Enter) has no press to hold: it toggles
+	micBtn.addEventListener("click",e=>{ if(e.detail===0) (phase==="idle" ? begin() : end()); });
+	micBtn.addEventListener("contextmenu",e=>e.preventDefault());   // touch long-press
 
 	// the engine button cycles every available engine, free ones first
 	const sttBtn=$("#sttBtn");
 	sttBtn.onclick=()=>{
 		const L=sttList();
-		if(L.length<2) return;
-		stt=L[(L.indexOf(stt)+1)%L.length];
+		if(L.length<2 || phase!=="idle") return;
+		stt=sttWant=L[(L.indexOf(stt)+1)%L.length];
 		try{ localStorage.setItem("kmdict-stt",stt); }catch(e){}
 		updateMicBtn();
 	};
 	window.updateMicBtn=function(){
 		const L=sttList();
-		if(!L.includes(stt)) stt=L[0]||null;
+		stt = L.includes(sttWant) ? sttWant : (L[0]||null);
 		const canRecord = navigator.mediaDevices && window.MediaRecorder;
 		// a server engine needs MediaRecorder; "browser" needs only the Web Speech API
 		const usable = L.filter(e=>e==="browser" ? !!SR : canRecord);

@@ -226,11 +226,19 @@ button picks between them at runtime from what `/health` reports in `stt`:
 1. **Server-side STT (preferred).** `MediaRecorder` captures the clip in the page, POSTs it to
    **`/listen`**, and the server transcribes it. `transcribe()` normalises whatever the browser
    recorded (webm/opus, ogg, mp4…) to 16 kHz mono WAV via ffmpeg, then dispatches to one of
-   `gemini` / `azure` / `google` / `whisper` (`STT_SOURCES`). Recording auto-stops ~0.8 s after
-   speech ends, with an 8 s hard cap.
-2. **`/record` — host-side capture.** For clients that cannot call `getUserMedia` (a VS Code
-   webview may be denied it), ffmpeg captures the machine's own microphone directly and the same
-   `transcribe()` runs on the result.
+   `gemini` / `azure` / `google` / `whisper` (`STT_SOURCES`).
+2. **`/record/start` … `/record/stop` — host-side capture.** For clients that cannot call
+   `getUserMedia` (a VS Code webview is usually denied it), ffmpeg captures the machine's own
+   microphone as raw PCM into memory; stop kills ffmpeg, wraps the samples as WAV and runs the same
+   `transcribe()`. (Stopping ffmpeg with `q` on stdin does not work on Windows — every stop waited
+   out the kill timeout.) `/record/start` answers only once samples are flowing, so the button
+   turns red when the mic is actually live — opening a dshow device takes ~1 s.
+
+**The user decides how long a recording is**, on every path: press and hold 🎤 and release to
+stop, or tap to start and tap again to stop (a press shorter than 400 ms counts as a tap; Space /
+Enter toggles). There is no silence detection — the old 0.8 s auto-stop cut words that have a
+pause in them — only a 30 s safety cap. The Web Speech engine runs with `continuous = true` for
+the same reason.
 3. **Web Speech API — a first-class engine, not a fallback.** `SpeechRecognition` with
    `lang = "km-KH"` runs in the page: free, no key, Chromium only. It appears in the engine list as
    `browser` and the ច icon.

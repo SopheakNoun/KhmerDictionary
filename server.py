@@ -565,18 +565,7 @@ def record_wav(seconds, device=None):
     """Capture `seconds` of 16 kHz mono WAV from the machine's microphone."""
     if not FFMPEG or not _CAPTURE:
         raise RuntimeError("recording needs ffmpeg (and a supported capture backend)")
-    dev = device or MIC_DEVICE
-    if _CAPTURE == "dshow":
-        devs = list_audio_devices()
-        if not dev:
-            if not devs:
-                raise RuntimeError("no microphone found")
-            dev = devs[0]
-        src = f"audio={dev}"
-    elif _CAPTURE == "avfoundation":
-        src = dev or ":0"
-    else:
-        src = dev or "default"
+    src, dev = _capture_source(device)
     out = subprocess.run(
         [FFMPEG, "-hide_banner", "-loglevel", "error", "-f", _CAPTURE, "-i", src,
          "-t", str(seconds), "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"],
@@ -584,6 +573,101 @@ def record_wav(seconds, device=None):
     if out.returncode != 0 or not out.stdout:
         raise RuntimeError(f"recording failed: {out.stderr.decode(errors='replace')[:200]}")
     return out.stdout, dev
+
+
+def _capture_source(device=None):
+    dev = device or MIC_DEVICE
+    if _CAPTURE == "dshow":
+        if not dev:
+            devs = list_audio_devices()
+            if not devs:
+                raise RuntimeError("no microphone found")
+            dev = devs[0]
+        return f"audio={dev}", dev
+    if _CAPTURE == "avfoundation":
+        return dev or ":0", dev or ":0"
+    return dev or "default", dev or "default"
+
+
+# ---- open-ended recording: /record/start ... /record/stop ----
+# A fixed-length /record cuts a word off or makes you wait. The mic button is
+# press-and-hold (or tap to start, tap to stop), so the length has to be the
+# user's: start ffmpeg now, stop it when they let go. One session at a time —
+# there is one microphone.
+RECORD_MAX_SECONDS = 30            # safety cap if a stop never arrives
+_rec_lock = threading.Lock()
+_rec = {"proc": None, "pcm": None, "dev": None, "reader": None}
+
+
+def record_start(device=None):
+    """Start capturing raw 16 kHz mono PCM from the mic; returns the device.
+
+    ffmpeg streams PCM to a pipe and a thread collects it, so stopping is just
+    killing ffmpeg — no container to finalise. (Asking ffmpeg to quit with "q"
+    on stdin is ignored on Windows: every stop waited out the kill timeout and
+    a 0.2 s tap came back as 5 s of audio.)"""
+    if not FFMPEG or not _CAPTURE:
+        raise RuntimeError("recording needs ffmpeg (and a supported capture backend)")
+    with _rec_lock:
+        _record_discard()          # a stale session (client vanished) must not block the mic
+        src, dev = _capture_source(device)
+        proc = subprocess.Popen(
+            [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-f", _CAPTURE, "-i", src,
+             "-t", str(RECORD_MAX_SECONDS), "-ac", "1", "-ar", "16000",
+             "-f", "s16le", "-flush_packets", "1", "pipe:1"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        pcm = bytearray()
+        live = threading.Event()
+
+        def pump():
+            while True:
+                chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
+                if not chunk:
+                    break
+                pcm.extend(chunk)
+                live.set()
+            live.set()
+
+        reader = threading.Thread(target=pump, daemon=True)
+        reader.start()
+        # Answer only once samples are flowing, so "recording" on the button
+        # means the mic is live and the first syllable is not lost to start-up.
+        live.wait(5)
+        if proc.poll() is not None and not pcm:
+            err = proc.stderr.read().decode(errors="replace")[:200]
+            raise RuntimeError(f"recording failed: {err or 'ffmpeg exited'}")
+        _rec.update(proc=proc, pcm=pcm, dev=dev, reader=reader)
+        return dev
+
+
+def record_stop():
+    """End the session and return (wav_bytes, device)."""
+    with _rec_lock:
+        proc, pcm, dev, reader = _rec["proc"], _rec["pcm"], _rec["dev"], _rec["reader"]
+        _rec.update(proc=None, pcm=None, dev=None, reader=None)
+    if proc is None:
+        raise RuntimeError("not recording")
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    reader.join(2)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(bytes(pcm))
+    return buf.getvalue(), dev
+
+
+def _record_discard():
+    """Kill any running session (caller holds _rec_lock)."""
+    proc = _rec["proc"]
+    _rec.update(proc=None, pcm=None, dev=None, reader=None)
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+        proc.wait()
 
 
 def is_wav16k_mono(data):
@@ -739,6 +823,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         print(f"[record] {engine}: {text!r} ({seconds}s from {dev!r})")
         return self._json(200, {"text": text, "engine": engine, "device": dev})
 
+    def _stt_engine(self, q):
+        """The engine a request asked for, or (None, error-response)."""
+        engines = available_stt()
+        if not engines:
+            return None, self._json(503, {"error": "no speech-to-text engine configured — see API_ACCESS.md"})
+        engine = q.get("engine", [engines[0]])[0]
+        if engine not in engines:
+            return None, self._json(503, {"error": f"'{engine}' has no key configured"})
+        return engine, None
+
+    def handle_record_start(self, parsed):
+        q = urllib.parse.parse_qs(parsed.query)
+        try:
+            dev = record_start(q.get("device", [None])[0])
+        except Exception as e:
+            print(f"[record] start FAIL: {e}")
+            return self._json(502, {"error": str(e)})
+        print(f"[record] started on {dev!r}")
+        return self._json(200, {"recording": True, "device": dev, "max_seconds": RECORD_MAX_SECONDS})
+
+    def handle_record_stop(self, parsed):
+        q = urllib.parse.parse_qs(parsed.query)
+        engine, err = self._stt_engine(q)
+        if err is not None:
+            with _rec_lock:
+                _record_discard()
+            return err
+        try:
+            wav, dev = record_stop()
+            if len(wav) < 16000:       # < 0.5 s of 16 kHz 16-bit mono: a tap, not a word
+                return self._json(200, {"text": "", "engine": engine, "device": dev, "short": True})
+            text = transcribe(wav, engine)
+        except Exception as e:
+            print(f"[record] FAIL {engine}: {e}")
+            return self._json(502, {"error": str(e)})
+        print(f"[record] {engine}: {text!r} ({len(wav)} bytes from {dev!r})")
+        return self._json(200, {"text": text, "engine": engine, "device": dev})
+
     def do_OPTIONS(self):
         # the extension webview preflights the /listen upload
         self.send_response(204)
@@ -752,6 +874,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.handle_listen(parsed)
         if parsed.path == "/restart":
             return self.handle_restart()
+        if parsed.path == "/record/start":
+            return self.handle_record_start(parsed)
+        if parsed.path == "/record/stop":
+            return self.handle_record_stop(parsed)
+        if parsed.path == "/record/cancel":
+            with _rec_lock:
+                _record_discard()
+            return self._json(200, {"ok": True})
         return self._json(404, {"error": "not found"})
 
     def handle_restart(self):

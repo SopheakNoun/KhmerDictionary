@@ -2,7 +2,7 @@
   "name": "khmer-dictionary",
   "displayName": "Khmer Dictionary (Chuon Nath)",
   "description": "Look up Khmer words from the Chuon Nath dictionary — search panel, hover definitions, and look-up on selection.",
-  "version": "1.29.0",
+  "version": "1.30.0",
   "publisher": "camgsm",
   "engines": {
     "vscode": "^1.75.0"
@@ -62,7 +62,7 @@
       },
       {
         "command": "khmerdict.voiceSearch",
-        "title": "Khmer Dictionary: Voice Search (open panel and record)",
+        "title": "Khmer Dictionary: Voice Search (start / stop recording)",
         "icon": "$(mic)"
       },
       {
@@ -192,14 +192,6 @@
           "default": true,
           "order": 9,
           "markdownDescription": "When the panel opens, automatically start the audio server (using `serverScriptPath`) if it isn't already running."
-        },
-        "khmerDictionary.recordSeconds": {
-          "type": "integer",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 15,
-          "order": 6,
-          "markdownDescription": "How many seconds to record when the panel falls back to **host-side recording** (used when VS Code does not allow the webview to open the microphone). The server records with ffmpeg and returns the transcript."
         },
         "khmerDictionary.muteAudio": {
           "type": "boolean",

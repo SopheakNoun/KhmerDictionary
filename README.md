@@ -38,6 +38,7 @@ python -m http.server 8777
 |---|---|
 | **Live search** | Type Khmer text; results rank **exact → prefix → contains**. Debounced, updates as you type. |
 | **Voice search (STT)** | 🎤 button in the app **and** the VS Code panel — speak a Khmer word, it fills the search box and searches. With a speech-to-text key (Gemini, Azure Speech or Google Cloud STT) the clip is transcribed by `server.py` (`POST /listen`) and works in **any** browser; without one it falls back to the browser's Web Speech API (**Chrome/Edge**). See `API_ACCESS.md`. |
+| **Free vs keyed** | **TTS is free** (no key) from Microsoft and Google; Google pronounces Khmer most accurately but is rate-limited (`429`), so Microsoft covers for it. **STT needs an API key**: there is no free server-side option. Details in `API_ACCESS.md` → *Summary*. |
 | **Browse by letter** | The full Khmer consonant row (ក … អ). Click a letter to list every headword starting with it. |
 | **Word detail** | Headword in the *Muol* display font, pronunciation, and each sense numbered with its part-of-speech label and usage examples. |
 | **Homographs** | Words with several entries (e.g. **ក**) show each meaning as a separate numbered sense. |

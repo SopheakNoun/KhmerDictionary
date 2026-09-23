@@ -144,6 +144,86 @@ function httpGetJson(url, timeoutMs) {
 	});
 }
 
+// POST to the audio server and parse the JSON answer (see httpGetJson).
+function httpPostJson(url, timeoutMs) {
+	return new Promise((resolve, reject) => {
+		const u = new URL(url);
+		const lib = u.protocol === "https:" ? https : http;
+		const req = lib.request(u, { method: "POST", timeout: timeoutMs || 3000,
+			headers: { "Content-Length": 0 } }, res => {
+			let data = "";
+			res.on("data", c => { data += c; });
+			res.on("end", () => {
+				let j = null;
+				try { j = JSON.parse(data); } catch (e) { /* not JSON */ }
+				if (res.statusCode >= 400) { reject(new Error((j && j.error) || ("HTTP " + res.statusCode))); }
+				else if (j) { resolve(j); }
+				else { reject(new Error("bad response from the audio server")); }
+			});
+		});
+		req.on("timeout", () => req.destroy(new Error("timeout")));
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+// ---- voice search from the command palette / Ctrl+Alt+M ----
+// Recorded on this machine by the audio server, so it works with no panel open
+// and when VS Code refuses a webview the microphone. The first run starts
+// recording; the second run — or a click on the status-bar item — stops it
+// and looks the word up. No fixed length: you stop when you have said it.
+let voiceRec = null;   // { bar, engine, timer } while recording
+async function voiceSearchToggle(context) {
+	if (voiceRec) { return voiceSearchStop(context); }
+	if (!(await ensureServer(true))) { return; }
+	let health;
+	try { health = await httpGetJson(audioBaseUrl() + "/health", 2000); }
+	catch (e) { vscode.window.showErrorMessage("Khmer Dictionary: audio server not reachable — " + e.message); return; }
+	const engines = health.stt || [];
+	if (!engines.length) {
+		vscode.window.showWarningMessage(
+			"Khmer Dictionary: no speech-to-text key configured. Add one to api_keys.txt — see API_ACCESS.md.");
+		return;
+	}
+	if (!health.mic) {
+		vscode.window.showWarningMessage("Khmer Dictionary: the audio server found no microphone (needs ffmpeg).");
+		return;
+	}
+	const want = vscode.workspace.getConfiguration("khmerDictionary").get("sttEngine") || "gemini";
+	const engine = engines.includes(want) ? want : engines[0];
+	const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
+	bar.text = "$(loading~spin) Khmer: opening mic…";
+	bar.show();
+	voiceRec = { bar, engine, timer: null };
+	try { await httpPostJson(audioBaseUrl() + "/record/start", 8000); }
+	catch (e) {
+		bar.dispose(); voiceRec = null;
+		vscode.window.showErrorMessage("Khmer Dictionary: could not start recording — " + e.message);
+		return;
+	}
+	bar.text = "$(record) Khmer: និយាយឥឡូវ — click or Ctrl+Alt+M to stop";
+	bar.tooltip = `Recording (${engine}). Click, or run Voice Search again, to stop.`;
+	bar.command = "khmerdict.voiceSearch";
+	bar.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+	voiceRec.timer = setTimeout(() => { if (voiceRec && voiceRec.bar === bar) { voiceSearchStop(context); } }, 30000);
+}
+async function voiceSearchStop(context) {
+	const { bar, engine, timer } = voiceRec;
+	if (!bar.command) { return; }             // still opening the mic
+	clearTimeout(timer);
+	bar.command = undefined;
+	bar.backgroundColor = undefined;
+	bar.text = "$(loading~spin) Khmer: transcribing…";
+	let j;
+	try { j = await httpPostJson(audioBaseUrl() + "/record/stop?engine=" + encodeURIComponent(engine), 60000); }
+	catch (e) { j = { error: e.message }; }
+	finally { bar.dispose(); voiceRec = null; }
+	if (j.error) { vscode.window.showErrorMessage("Khmer Dictionary: " + j.error); return; }
+	const text = (j.text || "").trim();
+	if (!text) { vscode.window.showWarningMessage("Khmer Dictionary: nothing recognised — try again."); return; }
+	openPanel(context, text);
+}
+
 /** @type {{pron:Object<string,string>, entries:Object<string,Array<{pos:string,def:string,ex:string[]}>}}|null} */
 let DICT = null;
 let SORTED_WORDS = null; // for prefix matching in hover
@@ -305,7 +385,6 @@ async function buildHtml(context, webview, host) {
 	const uiCfg = {
 		defaultVoice: cfg.get("defaultVoice") || "sreymom",
 		sttEngine: cfg.get("sttEngine") || "gemini",
-		recordSeconds: cfg.get("recordSeconds") || 4,
 		muteAudio: cfg.get("muteAudio") === true,
 		panelTheme: cfg.get("panelTheme") || "auto",
 		autoPlay: !!cfg.get("autoPlayOnLookup"),
@@ -503,7 +582,7 @@ body{margin:0;font-family:"KhmerSiemreap","Noto Sans Khmer",sans-serif;
 #voice{font-family:inherit;font-size:13px;padding:6px;border-radius:6px;
   color:var(--vscode-dropdown-foreground);background:var(--vscode-dropdown-background);
   border:1px solid var(--vscode-dropdown-border,transparent)}
-#mic{flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
+#mic{touch-action:none;user-select:none;flex:none;cursor:pointer;font-size:15px;width:34px;border-radius:6px;
   color:var(--vscode-button-secondaryForeground);background:var(--vscode-button-secondaryBackground);border:0}
 #mic:hover{filter:brightness(1.1)}
 #mic:disabled,#voice:disabled,#sttsel:disabled{opacity:.45;cursor:default}
@@ -760,6 +839,105 @@ async function playBlob(word,btn,use){
     URL.revokeObjectURL(url);
     vsc.postMessage({type:"playHost", word:word, voice:use}); });
 }
+// ---- voice search: hold 🎤 and release to stop, or tap to start and tap to stop ----
+// Two ways to reach a microphone. The webview's own (MediaRecorder -> /listen)
+// when VS Code grants it; otherwise the audio server records on this machine
+// (/record/start ... /record/stop), which is what a desktop webview usually
+// gets. Either way the clip ends when you let go, not after a fixed time.
+(function(){
+  const mic=$("#mic");
+  const HOLD_MS=400, MAX_MS=30000;
+  let phase="idle";               // idle | starting | rec | busy
+  let stopAsked=false, capTimer=null, active=null;
+  let webMic=!!(navigator.mediaDevices && window.MediaRecorder);   // false once VS Code refuses it
+  function setMic(st){ phase=st;
+    mic.classList.toggle("rec",st==="rec"||st==="starting");
+    mic.textContent = st==="rec"||st==="starting"?"⏺":st==="busy"?"…":"🎤";
+    mic.disabled = st==="busy" || !stt; }
+  function got(txt){
+    txt=(txt||"").trim();
+    if(!txt){ setStatus("⚠ មិនឮពាក្យ — សូមព្យាយាមម្ដងទៀត (nothing recognised, try again)."); return; }
+    setStatus(null); $("#q").value=txt; runLookup(txt);
+  }
+  async function jsonOrThrow(r){ const j=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
+
+  const inWebview={
+    mr:null,
+    async begin(){
+      // a webview that is refused the mic can also just never answer: don't wait forever
+      const stream=await Promise.race([navigator.mediaDevices.getUserMedia({audio:true}),
+        new Promise((_,no)=>setTimeout(()=>no(new Error("timeout")),3000))]);
+      const chunks=[], mr=new MediaRecorder(stream); this.mr=mr;
+      mr.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+      mr.onstop=async()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        const b=new Blob(chunks,{type:mr.mimeType||"audio/webm"});
+        if(b.size<=1000){ setMic("idle"); setStatus("⚠ ខ្លីពេក — សង្កត់ឲ្យយូរជាងនេះ (too short)."); return; }
+        try{ got((await jsonOrThrow(await fetch(AUDIO+"/listen?engine="+encodeURIComponent(stt),
+          {method:"POST",body:b,headers:{"Content-Type":b.type||"audio/webm"}}))).text); }
+        catch(e){ setStatus("⚠ STT: "+e.message); }
+        finally{ setMic("idle"); }
+      };
+      mr.start();
+    },
+    end(){ setMic("busy"); this.mr.stop(); }
+  };
+  const onHost={
+    async begin(){
+      setStatus("🎙 កំពុងបើកមីក្រូហ្វូន… (opening the microphone)");
+      await jsonOrThrow(await fetch(AUDIO+"/record/start",{method:"POST"}));
+    },
+    async end(){
+      setMic("busy"); setStatus("⏳ កំពុងស្ដាប់… (transcribing)");
+      try{ const j=await jsonOrThrow(await fetch(AUDIO+"/record/stop?engine="+encodeURIComponent(stt),{method:"POST"}));
+        if(j.short) setStatus("⚠ ខ្លីពេក — សង្កត់ឲ្យយូរជាងនេះ (too short)."); else got(j.text); }
+      catch(e){ setStatus("⚠ STT: "+e.message); }
+      finally{ setMic("idle"); }
+    }
+  };
+
+  async function begin(){
+    if(phase!=="idle" || !stt) return;
+    stopAsked=false; setMic("starting");
+    let eng=null, why="";
+    if(webMic){
+      try{ await inWebview.begin(); eng=inWebview; }
+      catch(e){ webMic=false; why=e.message; }   // remember: go straight to the host next time
+    }
+    if(!eng && hostMic){
+      try{ await onHost.begin(); eng=onHost; }
+      catch(e){ why=e.message; }
+    }
+    if(!eng){ setMic("idle");
+      setStatus("⚠ មីក្រូហ្វូន៖ "+(why||"no microphone")+(hostMic?"":" (the audio server found no microphone either — needs ffmpeg)"));
+      return; }
+    active=eng; setMic("rec");
+    setStatus("🎙 កំពុងថត — លែងប៊ូតុង ឬចុចម្ដងទៀតដើម្បីបញ្ឈប់ (recording — release or click again to stop)");
+    capTimer=setTimeout(end,MAX_MS);
+    if(stopAsked) end();          // released while the mic was still opening
+  }
+  function end(){
+    if(phase==="starting"){ stopAsked=true; return; }
+    if(phase!=="rec") return;
+    clearTimeout(capTimer); active.end();
+  }
+
+  let pressAt=0, pressStarted=false;
+  mic.addEventListener("pointerdown",e=>{
+    if(e.button!==0 || mic.disabled) return;
+    e.preventDefault();
+    try{ mic.setPointerCapture(e.pointerId); }catch(_){}
+    if(phase==="starting"||phase==="rec"){ pressStarted=false; end(); return; }
+    pressAt=Date.now(); pressStarted=true; begin();
+  });
+  const release=()=>{ if(!pressStarted) return; pressStarted=false;
+    if(Date.now()-pressAt>=HOLD_MS) end(); };
+  mic.addEventListener("pointerup",release);
+  mic.addEventListener("pointercancel",release);
+  // keyboard, and the "record" message from the command, have no press to hold: toggle
+  mic.addEventListener("click",e=>{ if(e.detail===0) (phase==="idle" ? begin() : end()); });
+})();
 $("#q").addEventListener("input",e=>search(e.target.value));
 vsc.postMessage({type:"ready"});   // tell the extension the webview is loaded (deliver queued action)
 window.addEventListener("message",e=>{const d=e.data||{};
@@ -810,38 +988,7 @@ function activate(context) {
 			if (!(await ensureServer(true))) { return; }
 			playViaHost(word, voice);   // OS playback — hover has no webview gesture for autoplay
 		}),
-		vscode.commands.registerCommand("khmerdict.voiceSearch", async () => {
-			// Record on the machine through the audio server rather than in the
-			// webview: VS Code may refuse a webview the microphone, and this way
-			// voice search works from the command palette with no panel open.
-			if (!(await ensureServer(true))) { return; }
-			let health;
-			try { health = await httpGetJson(audioBaseUrl() + "/health", 2000); }
-			catch (e) { vscode.window.showErrorMessage("Khmer Dictionary: audio server not reachable — " + e.message); return; }
-			const engines = health.stt || [];
-			if (!engines.length) {
-				vscode.window.showWarningMessage(
-					"Khmer Dictionary: no speech-to-text key configured. Add one to api_keys.txt — see API_ACCESS.md.");
-				return;
-			}
-			if (!health.mic) {
-				vscode.window.showWarningMessage("Khmer Dictionary: the audio server found no microphone (needs ffmpeg).");
-				return;
-			}
-			const cfg = vscode.workspace.getConfiguration("khmerDictionary");
-			const secs = cfg.get("recordSeconds") || 4;
-			const want = cfg.get("sttEngine") || "gemini";
-			const engine = engines.includes(want) ? want : engines[0];
-			const url = audioBaseUrl() + "/record?seconds=" + secs + "&engine=" + encodeURIComponent(engine);
-			const j = await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification,
-				  title: `🎙 និយាយឥឡូវ / Speak now (${secs}s, ${engine})…` },
-				() => httpGetJson(url, (secs + 30) * 1000).catch(e => ({ error: e.message })));
-			if (j.error) { vscode.window.showErrorMessage("Khmer Dictionary: " + j.error); return; }
-			const text = (j.text || "").trim();
-			if (!text) { vscode.window.showWarningMessage("Khmer Dictionary: nothing recognised — try again."); return; }
-			openPanel(context, text);
-		}),
+		vscode.commands.registerCommand("khmerdict.voiceSearch", () => voiceSearchToggle(context)),
 		vscode.commands.registerCommand("khmerdict.openSettings", () =>
 			vscode.commands.executeCommand("workbench.action.openSettings",
 				"@ext:camgsm.khmer-dictionary")),
