@@ -384,7 +384,7 @@ async function probeAudio(){
 			const j=await r.json();
 			audioSources=j.sources||[];
 			sttSources=j.stt||[];
-			if(!sttSources.includes(stt)) stt=sttSources[0]||null;
+			{ const L=sttList(); if(!L.includes(stt)) stt=L[0]||null; }
 			if(window.updateMicBtn) updateMicBtn();
 		}
 	}catch(e){ audioSources=[]; sttSources=[]; }
@@ -563,13 +563,22 @@ $("#themeBtn").onclick=()=>{
 try{ const s=localStorage.getItem("kmdict-theme"); if(s) document.documentElement.setAttribute("data-theme",s); }catch(e){}
 
 // ---- voice input: speak a word to search --------------------------------
-// Two paths. If server.py has a speech-to-text key (Gemini / Azure / Google
-// Cloud), the mic records here and POSTs the clip to /listen, which returns
-// Khmer text — that works in any browser. Otherwise we fall back to the
-// browser's own Web Speech API (Chrome/Edge only). See API_ACCESS.md.
+// Engines come from two places and sit in one list. "browser" is the Web Speech
+// API, which runs in the page (Chrome/Edge only, km-KH); everything else is
+// server-side — the mic records here and POSTs the clip to /listen, which works
+// in any browser but needs a key. The list is ordered **free first, keyed
+// after**, so the no-cost options are what you land on. See API_ACCESS.md.
 let sttSources=[];                 // e.g. ["gemini","azure"] from /health
-const STT_LABEL={whisper:"Whisper (local, no key)",gemini:"Gemini",azure:"Microsoft Azure Speech",google:"Google Cloud STT"};
-const STT_ICON ={whisper:"W",gemini:"G✦",azure:"MS",google:"GC"};
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const STT_LABEL={browser:"Web Speech (browser, no key)",whisper:"Whisper (local, no key)",gemini:"Gemini",azure:"Microsoft Azure Speech",google:"Google Cloud STT"};
+const STT_ICON ={browser:"ច",whisper:"W",gemini:"G✦",azure:"MS",google:"GC"};
+const STT_FREE =["browser","whisper"];      // no key, no metering
+// Every engine available right now, free ones first. /health already returns
+// whisper ahead of the keyed engines, so each group keeps the server's order.
+function sttList(){
+	const all=(SR?["browser"]:[]).concat(sttSources);
+	return all.filter(e=>STT_FREE.includes(e)).concat(all.filter(e=>!STT_FREE.includes(e)));
+}
 let stt=null;                      // chosen engine
 try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
 
@@ -650,8 +659,7 @@ try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
 		})();
 	}
 
-	// ---- fallback: the browser's own recogniser (Chrome/Edge, km-KH) ----
-	const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+	// ---- the browser's own recogniser (Chrome/Edge, km-KH), engine "browser" ----
 	let rec=null, listening=false;
 	function browserSR(){
 		if(listening){ if(rec) rec.stop(); return; }
@@ -676,26 +684,31 @@ try{ const s=localStorage.getItem("kmdict-stt"); if(s) stt=s; }catch(e){}
 		catch(err){ listening=false; micBtn.classList.remove("listening"); micBtn.textContent="🎤"; }
 	}
 
-	// server STT is preferred when a key is configured; otherwise the browser's
-	micBtn.onclick=()=> sttSources.length ? recordAndSend() : browserSR();
+	// route on the chosen engine: "browser" stays in the page, the rest POST
+	micBtn.onclick=()=> stt==="browser" ? browserSR()
+		: (sttSources.includes(stt) ? recordAndSend() : browserSR());
 
-	// the engine button cycles whichever of gemini/azure/google have keys
+	// the engine button cycles every available engine, free ones first
 	const sttBtn=$("#sttBtn");
 	sttBtn.onclick=()=>{
-		if(sttSources.length<2) return;
-		stt=sttSources[(sttSources.indexOf(stt)+1)%sttSources.length];
+		const L=sttList();
+		if(L.length<2) return;
+		stt=L[(L.indexOf(stt)+1)%L.length];
 		try{ localStorage.setItem("kmdict-stt",stt); }catch(e){}
 		updateMicBtn();
 	};
 	window.updateMicBtn=function(){
-		const canServer = sttSources.length && navigator.mediaDevices && window.MediaRecorder;
-		micBtn.style.display = (canServer || SR) ? "" : "none";
-		micBtn.title = canServer
-			? "ស្វែងរកដោយសំឡេង ("+(STT_LABEL[stt]||stt)+")"
-			: "ស្វែងរកដោយសំឡេង (browser)";
-		sttBtn.style.display = sttSources.length>1 ? "" : "none";
+		const L=sttList();
+		if(!L.includes(stt)) stt=L[0]||null;
+		const canRecord = navigator.mediaDevices && window.MediaRecorder;
+		// a server engine needs MediaRecorder; "browser" needs only the Web Speech API
+		const usable = L.filter(e=>e==="browser" ? !!SR : canRecord);
+		micBtn.style.display = usable.length ? "" : "none";
+		micBtn.title = "ស្វែងរកដោយសំឡេង ("+(STT_LABEL[stt]||stt||"browser")+")";
+		sttBtn.style.display = usable.length>1 ? "" : "none";
 		sttBtn.textContent = STT_ICON[stt]||"S";
-		sttBtn.title = "ម៉ាស៊ីនស្ដាប់៖ "+(STT_LABEL[stt]||stt);
+		sttBtn.title = "ម៉ាស៊ីនស្ដាប់៖ "+(STT_LABEL[stt]||stt)
+			+ (STT_FREE.includes(stt) ? " — free" : " — keyed");
 	};
 	updateMicBtn();
 })();

@@ -483,9 +483,10 @@ def stt_azure(wav):
     """Azure Speech short-audio REST endpoint (<= 60 s per request)."""
     url = (f"https://{AZURE_REGION}.stt.speech.microsoft.com"
            f"/speech/recognition/conversation/cognitiveservices/v1?language={STT_LANG}")
+    _, rate = wav_pcm(wav)          # declare the rate the file actually has
     j = _post_json(url, wav, {
         "Ocp-Apim-Subscription-Key": read_key("AZURE_SPEECH_KEY"),
-        "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
+        "Content-Type": f"audio/wav; codecs=audio/pcm; samplerate={rate}",
         "Accept": "application/json",
     })
     if j.get("RecognitionStatus") != "Success":
@@ -493,13 +494,25 @@ def stt_azure(wav):
     return (j.get("DisplayText") or "").strip()
 
 
+def wav_pcm(wav):
+    """(raw 16-bit PCM samples, sample rate) out of a WAV container.
+
+    LINEAR16 means *headerless* PCM. Posting a whole WAV under that encoding
+    feeds the 44-byte RIFF header to the recogniser as if it were audio — a
+    click before the first syllable, which is exactly the part of a one-word
+    clip that has to be heard correctly."""
+    with wave.open(io.BytesIO(wav), "rb") as w:
+        return w.readframes(w.getnframes()), w.getframerate()
+
+
 def stt_google(wav):
     """Google Cloud Speech-to-Text v1, authenticated with a plain API key."""
     url = f"https://speech.googleapis.com/v1/speech:recognize?key={read_key('GOOGLE_STT_API_KEY')}"
+    pcm, rate = wav_pcm(wav)
     body = json.dumps({
-        "config": {"encoding": "LINEAR16", "sampleRateHertz": 16000,
+        "config": {"encoding": "LINEAR16", "sampleRateHertz": rate,
                    "languageCode": STT_LANG, "model": "default"},
-        "audio": {"content": base64.b64encode(wav).decode("ascii")},
+        "audio": {"content": base64.b64encode(pcm).decode("ascii")},
     }).encode("utf-8")
     j = _post_json(url, body, {"Content-Type": "application/json"})
     alts = [r["alternatives"][0]["transcript"] for r in j.get("results", []) if r.get("alternatives")]

@@ -147,6 +147,12 @@ means still nothing. Until that changes, Gemini is Google's route to a gendered 
 
 ### C. Google Cloud Speech-to-Text — `km-KH`
 
+> `LINEAR16` means **headerless** PCM. Post a whole WAV under that encoding and the 44-byte
+> RIFF header is decoded as audio — a click over the start of the word, which on a one-word
+> clip is the part that must be heard. `server.py` strips the container with `wav_pcm()` and
+> sends the file's real sample rate. Azure is the opposite: its short-audio endpoint wants the
+> WAV intact, so only the declared `samplerate=` is taken from the header.
+
 **Getting access**
 
 1. <https://console.cloud.google.com> → create/choose a project → **Billing** must be enabled.

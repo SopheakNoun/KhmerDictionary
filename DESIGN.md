@@ -231,8 +231,14 @@ button picks between them at runtime from what `/health` reports in `stt`:
 2. **`/record` — host-side capture.** For clients that cannot call `getUserMedia` (a VS Code
    webview may be denied it), ffmpeg captures the machine's own microphone directly and the same
    `transcribe()` runs on the result.
-3. **Web Speech API (fallback only).** If `/health` reports no STT engine at all, the button falls
-   back to the browser's `SpeechRecognition` with `lang = "km-KH"` — free, no key, Chromium only.
+3. **Web Speech API — a first-class engine, not a fallback.** `SpeechRecognition` with
+   `lang = "km-KH"` runs in the page: free, no key, Chromium only. It appears in the engine list as
+   `browser` and the ច icon.
+
+All of them sit in **one list, ordered free first and keyed after** (`sttList()` in `index.html`):
+`browser`, `whisper`, then `gemini`, `azure`, `google`. The ⚙ engine button cycles the whole list,
+so a no-cost engine is what you land on by default and a metered one is a deliberate choice. A saved
+`kmdict-stt` preference wins over the default as long as that engine is still available.
 
 On a result the transcript fills the search field and runs the normal search; the button pulses
 while listening. Every server-side engine needs a key (see `API_ACCESS.md`); only the Web Speech
