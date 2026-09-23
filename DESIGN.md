@@ -235,8 +235,12 @@ button picks between them at runtime from what `/health` reports in `stt`:
    `lang = "km-KH"` runs in the page: free, no key, Chromium only. It appears in the engine list as
    `browser` and the ច icon.
 
-All of them sit in **one list, ordered free first and keyed after** (`sttList()` in `index.html`):
-`browser`, `whisper`, then `gemini`, `azure`, `google`. The ⚙ engine button cycles the whole list,
+All of them sit in **one list, ordered free first and keyed after** (`sttList()` in `index.html`),
+with the keyed ones ranked by measured quality — `browser`, `whisper`, then `google`, `gemini`,
+`azure`. The ranking comes from a round-trip benchmark (API_ACCESS.md): Google 8/10 at 1.3 s beat
+Gemini 7/10 at 2.5 s, and Azure is last only because it has never run. `STT_SOURCES` in `server.py`
+is the single source of that order — `/health` returns it, and the web page and the extension
+dropdown both follow it. The ⚙ engine button cycles the whole list,
 so a no-cost engine is what you land on by default and a metered one is a deliberate choice. A saved
 `kmdict-stt` preference wins over the default as long as that engine is still available.
 

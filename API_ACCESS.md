@@ -259,6 +259,28 @@ print(r.text)
 
 ---
 
+## Which STT to use — measured, not guessed
+
+Ten cached edge-tts clips round-tripped through `/listen` (2026-09-23): synthesize a known
+headword, post it back, compare the transcript to the word.
+
+| engine | exact match | avg latency |
+|---|---|---|
+| **Google Cloud STT** | **8/10** | **1.3 s** |
+| Gemini (`gemini-3.5-flash-lite`) | 7/10 | 2.5 s |
+| Azure | not yet run — no key | — |
+
+Google is about twice as fast and slightly more accurate, so `STT_SOURCES` lists it first among the
+keyed engines and both clients default to it. Failure shapes differ and are worth knowing:
+
+- **Google guesses English** when Khmer is unclear — `បាយ` came back as `pie` — despite
+  `languageCode: km-KH`.
+- **Gemini truncates** — `សិស្ស` → `សេ`, consistent with a lite model under `max_output_tokens=64`.
+- `អក្សរ` failed on **both**, which points at the clip rather than the recognisers.
+
+Caveat: the input is synthetic speech — clean, no noise or accent — so these are an optimistic upper
+bound. They rank the engines; they do not predict accuracy on a real voice.
+
 ## How this project uses them
 
 ### Endpoints of the local server (`server.py`, default <http://localhost:8777>)

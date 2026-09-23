@@ -564,7 +564,8 @@ const vsc=acquireVsCodeApi();
 const VOICE_META={sreymom:"Microsoft ស្រី",piseth:"Microsoft ប្រុស",google:"Google",kore:"Gemini ស្រី",puck:"Gemini ប្រុស"};
 let audioSources=[], voice=null, curAudio=null, curWord=null;
 let sttSources=[], stt=null, hostMic=false;   // STT engines + host-side recording
-const STT_META={whisper:"Whisper (local)",gemini:"Gemini",azure:"Microsoft Azure",google:"Google Cloud"};
+// same order as server.py STT_SOURCES: free first, then keyed best-first
+const STT_META={whisper:"Whisper (local)",google:"Google Cloud",gemini:"Gemini",azure:"Microsoft Azure"};
 document.getElementById("gear").onclick=()=>vsc.postMessage({type:"openSettings"});
 
 // ---- sound on/off and panel theme (both remembered in settings) ----

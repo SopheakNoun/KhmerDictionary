@@ -356,11 +356,16 @@ def content_type(data):
 # keyless option: every provider wants a key. See API_ACCESS.md.
 #
 # engine -> (label, env/key name)
+# Order matters: available_stt() returns engines in this order and both clients
+# take the first one as their default. Free first, then keyed best-first.
+# Measured 2026-09-23 on 10 cached edge-tts clips round-tripped through /listen:
+#   google  8/10 exact, ~1.3 s      gemini  7/10 exact, ~2.5 s
+# Azure sits last only because it has never run here — no key yet.
 STT_SOURCES = {
     "whisper": ("Whisper (local, no key)", ""),
+    "google":  ("Google Cloud Speech-to-Text", "GOOGLE_STT_API_KEY"),
     "gemini":  ("Gemini", "GEMINI_API_KEY"),
     "azure":   ("Microsoft Azure Speech", "AZURE_SPEECH_KEY"),
-    "google":  ("Google Cloud Speech-to-Text", "GOOGLE_STT_API_KEY"),
 }
 # A "lite" model answers a one-word transcription in ~2 s; the full flash model
 # took 10-23 s for the same clip, which is far too slow to feel like voice search.
