@@ -198,9 +198,11 @@ click 🔊  ──GET /speak?word&voice──►  cache_get(word,voice) in
   (`km-KH-SreymomNeural` / `km-KH-PisethNeural`), stores the blob, and returns it. Threaded
   (`asyncio.run` per request), so a slow first synth doesn't block other requests. UTF-8 logging
   (Khmer-safe on a Windows console).
-- **`/health`** reports whether audio is available (i.e. `edge-tts` is importable). At startup the
-  browser calls it and only shows the 🔊 button + ♀/♂ toggle when audio is available — so running
-  plain `start.bat` (no server) degrades cleanly to a silent dictionary.
+- **`/health`** reports what is actually usable right now — `{"sources": […], "stt": […], "mic": bool}`
+  — not just whether edge-tts imports. At startup the browser calls it and only shows the 🔊 button
+  + voice picker for the engines listed in `sources`, so running plain `start.bat` (no server)
+  degrades cleanly to a silent dictionary. Five voices are registered in `SOURCES`: the Microsoft
+  pair via edge-tts, `google` via gTTS, and the `kore`/`puck` Gemini pair (key + billing required).
 - **`generate_audio.py`** is an optional bulk pre-warm that fills the *same* `audio.sqlite`, so
   pre-warmed and on-click audio share one cache.
 
@@ -218,15 +220,24 @@ browser Web Speech API (no Khmer *speech synthesis* voice on Windows/most browse
 
 ## 5c. Voice input (speak to search)
 
-The 🎤 button lets you speak a Khmer word into the search box. This uses the browser's built-in
-**Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`) with `lang = "km-KH"` —
-free, no key, entirely in the browser. On a result the transcript fills the search field and runs
-the normal search. Interim results stream in live; the button pulses while listening.
+The 🎤 button lets you speak a Khmer word into the search box. There are **two paths**, and the
+button picks between them at runtime from what `/health` reports in `stt`:
 
-Requirements/limits: works in **Chromium browsers** (Chrome, Edge) — recognition is performed by
-the browser's online engine, so it needs internet and microphone permission. If the API is absent
-(e.g. Firefox), the button hides itself and the app is unchanged. (Note this is the *recognition*
-side of Web Speech, which does support Khmer, unlike the synthesis side used for TTS above.)
+1. **Server-side STT (preferred).** `MediaRecorder` captures the clip in the page, POSTs it to
+   **`/listen`**, and the server transcribes it. `transcribe()` normalises whatever the browser
+   recorded (webm/opus, ogg, mp4…) to 16 kHz mono WAV via ffmpeg, then dispatches to one of
+   `gemini` / `azure` / `google` / `whisper` (`STT_SOURCES`). Recording auto-stops ~0.8 s after
+   speech ends, with an 8 s hard cap.
+2. **`/record` — host-side capture.** For clients that cannot call `getUserMedia` (a VS Code
+   webview may be denied it), ffmpeg captures the machine's own microphone directly and the same
+   `transcribe()` runs on the result.
+3. **Web Speech API (fallback only).** If `/health` reports no STT engine at all, the button falls
+   back to the browser's `SpeechRecognition` with `lang = "km-KH"` — free, no key, Chromium only.
+
+On a result the transcript fills the search field and runs the normal search; the button pulses
+while listening. Every server-side engine needs a key (see `API_ACCESS.md`); only the Web Speech
+fallback does not. Whisper is the one local option, but it is **off unless `WHISPER_STT=1`** —
+below `large-v3` it transcribes Khmer as Sinhala/Devanagari nonsense.
 
 ## 6. Limitations & notes
 
@@ -236,6 +247,19 @@ side of Web Speech, which does support Khmer, unlike the synthesis side used for
   verified directly; the WASM UI was not screenshot-tested in the build environment.
 - **Read-only:** the app never writes to `dict.sqlite`; edits are out of scope.
 - **Search is substring-based**, not phonetic/fuzzy — it matches the original app's behavior.
+
+### Known logic issues (audit 2026-09-23)
+
+Found by reading the TTS/STT paths. **1–3 are fixed** (2026-09-23); 4–6 are latent and still open.
+
+| # | Status | Issue | Where |
+|---|---|---|---|
+| 1 | fixed | **`USE_PRON` was inert for cached words.** `speech_text()` chooses headword vs. respelling, but the cache keys only on `(word, voice_column)` — nothing recorded *which text* produced the blob, so flipping `USE_PRON` changed nothing for the 18,726 cached words. **Fixed:** `cache_key(word)` now returns `speech_text(word)`, so a clip is stored under the text actually spoken. With `USE_PRON` off the key is the headword unchanged — every existing row still matches, no migration. | `server.py:189`, `:226`, `:238` |
+| 2 | fixed | **`_gemini` had no candidate guard.** `resp.candidates[0].content.parts[0].inline_data.data` raises `IndexError`/`AttributeError` when the model returns text instead of audio — the exact failure `GEMINI_PROMPT` exists to prevent — and that opaque error was what `/speak` returned. **Fixed:** guards ported from `generate_audio.py` — now `no audio returned (finish_reason=…)` or `no audio returned (the model replied with text)`. | `server.py:304` |
+| 3 | fixed | **`transcribe()` trusted a RIFF header it never read.** A WAV is passed through unconverted, then Azure is told `samplerate=16000` and Google `sampleRateHertz: 16000` regardless of the file's real rate. Unreachable from today's clients, but wrong for any new one. **Fixed:** `is_wav16k_mono()` parses the header (rate, channels, width, compression) and only genuinely-conforming audio skips ffmpeg. | `server.py:548`, `:464`, `:476` |
+| 4 | open | **Whisper is not thread-safe here.** `_whisper_lock` guards only model construction; `transcribe()` then runs outside it on a threading server, so concurrent `/listen` calls share one `WhisperModel`. Latent — needs `WHISPER_STT=1`. | `server.py:360`–`373` |
+| 5 | open | **Key files are re-read every request.** `available_sources()` → `GEMINI_OK()` → `read_key()` opens `api_keys.txt` on every `/speak` *and* every `/health`. Cacheable. | `server.py:201` |
+| 6 | open | **Misleading failure counts.** In `run()`, once one fatal 429 sets `_stop_reason` the remaining tasks in the batch return `"stopped"` and are counted as `failed` — so `ok=0 fail=300` can mean only ~4 requests were actually made (the semaphore width). Also `already_have(con, words, key)` never uses `words`. | `generate_audio.py:304`, `:193` |
 
 ---
 

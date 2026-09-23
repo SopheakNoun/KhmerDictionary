@@ -126,6 +126,41 @@ def gemini_client():
     return _gemini_client
 
 
+# Same idea as the server: speak the dictionary's respelling when it has one.
+# OFF by default. The dictionary's respellings are hints, not full
+# pronunciations: 1,578 of 6,780 are truncated ("កកោស" -> "ក៏—"), so speaking
+# them gives a partial word. Set USE_PRON=1 to try them anyway.
+USE_PRON = os.environ.get("USE_PRON", "0") != "0"
+PRON_SEP = os.environ.get("PRON_SEPARATOR", "-")   # the hyphen reads best
+_pron = None
+
+
+def pronunciation(word):
+    """Looked up regardless of USE_PRON — --only-pron needs the list even when
+    the respellings are not being spoken."""
+    global _pron
+    if _pron is None:
+        _pron = {}
+        con = sqlite3.connect(DICT_DB)
+        con.text_factory = str
+        for w, p in con.execute("SELECT writtenForm, pronunciation FROM lexicalentry "
+                                "WHERE pronunciation IS NOT NULL AND pronunciation <> ''"):
+            _pron.setdefault(w, p)
+        con.close()
+    return _pron.get(word, "")
+
+
+def speech_text(word):
+    if not USE_PRON:
+        return word
+    p = pronunciation(word)
+    return p.replace("-", PRON_SEP) if p else word
+
+
+def words_with_pronunciation(words):
+    return [w for w in words if pronunciation(w)]
+
+
 def load_words(limit):
     con = sqlite3.connect(DICT_DB)
     con.text_factory = str
@@ -155,8 +190,16 @@ def open_cache():
     return con
 
 
+def cache_key(word):
+    """The row a clip is stored under: the text actually spoken, not the
+    headword. Matches server.py's cache_key so the bulk generator and the
+    on-click path keep sharing one cache. With USE_PRON off this is the
+    headword unchanged, so existing rows still match."""
+    return speech_text(word)
+
+
 def already_have(con, words, key):
-    """Set of words that already have this voice column filled."""
+    """Set of cache keys that already have this voice column filled."""
     col = SOURCES[key][0]
     q = f"SELECT word FROM audio_cache WHERE {col} IS NOT NULL"
     return {r[0] for r in con.execute(q)}
@@ -220,6 +263,7 @@ def _gemini(word, voice):
 
 async def synth(word, key):
     _, engine, voice = SOURCES[key]
+    word = speech_text(word)
     if engine == "edge":
         return await _edge(word, voice)
     if engine == "gtts":
@@ -281,7 +325,7 @@ async def run(pairs, con, concurrency):
                 con.execute(
                     f"INSERT INTO audio_cache(word,{col},created) VALUES (?,?,?) "
                     f"ON CONFLICT(word) DO UPDATE SET {col}=excluded.{col}, created=excluded.created",
-                    (w, m, datetime.now(timezone.utc).isoformat()))
+                    (cache_key(w), m, datetime.now(timezone.utc).isoformat()))
                 done += 1
             else:
                 failed += 1
@@ -322,6 +366,10 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only the first N words (testing)")
     ap.add_argument("--concurrency", type=int, default=0,
                     help="parallel requests (default 12, or 4 when a Gemini voice is used)")
+    ap.add_argument("--only-pron", action="store_true",
+                    help="only the headwords that have a pronunciation respelling")
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-synthesize and overwrite clips that are already stored")
     ap.add_argument("--retry-blocked", type=int, default=0, metavar="MINUTES",
                     help="when a provider blocks the run (gTTS 429 on this IP, Gemini daily cap), "
                          "sleep this many minutes and resume, instead of exiting")
@@ -355,10 +403,12 @@ def main():
 
     while True:
         _stop_reason = None
+        todo = words_with_pronunciation(words) if args.only_pron else words
         pairs = []
         for k in voices:
-            have = already_have(con, words, k)
-            pairs += [(w, k) for w in words if w not in have]
+            have = set() if args.refresh else already_have(con, words, k)
+            # `have` holds cache keys, so compare on the same footing
+            pairs += [(w, k) for w in todo if cache_key(w) not in have]
 
         print(f"words={len(words)} voices={voices} to_generate={len(pairs)} "
               f"concurrency={concurrency}", flush=True)

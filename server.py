@@ -153,6 +153,47 @@ SOURCES = {
 
 GEMINI_OK = lambda: GENAI_OK and bool(gemini_key())
 
+# The dictionary stores a pronunciation respelling for ~6,800 headwords —
+# "កករ" is read "ក៏-ក", two syllables. Sent the raw spelling, the TTS guesses,
+# and gets some of them wrong. When a respelling exists, speak that instead.
+DICT_DB = os.path.join(HERE, "dict.sqlite")
+# OFF by default. The dictionary's respellings are hints, not full
+# pronunciations: 1,578 of 6,780 are truncated ("កកោស" -> "ក៏—"), so speaking
+# them gives a partial word. Set USE_PRON=1 to try them anyway.
+USE_PRON = os.environ.get("USE_PRON", "0") != "0"
+PRON_SEP = os.environ.get("PRON_SEPARATOR", "-")   # the hyphen reads best
+_pron_cache = None
+
+
+def pronunciation(word):
+    """The dictionary's respelling for a headword, or "" if it has none.
+
+    Looked up whether or not USE_PRON is set: --only-pron needs to know which
+    words have one even when we are deliberately not speaking them."""
+    global _pron_cache
+    if _pron_cache is None:
+        _pron_cache = {}
+        try:
+            con = sqlite3.connect(f"file:{DICT_DB}?mode=ro", uri=True, timeout=10)
+            con.text_factory = str
+            for w, p in con.execute("SELECT writtenForm, pronunciation FROM lexicalentry "
+                                    "WHERE pronunciation IS NOT NULL AND pronunciation <> ''"):
+                _pron_cache.setdefault(w, p)
+            con.close()
+            print(f"  pronunciations loaded: {len(_pron_cache)}", flush=True)
+        except Exception as e:
+            print(f"  (no pronunciations: {e})", flush=True)
+    return _pron_cache.get(word, "")
+
+
+def speech_text(word):
+    """What we actually hand to the TTS engine for this headword."""
+    if not USE_PRON:
+        return word
+    p = pronunciation(word)
+    return p.replace("-", PRON_SEP) if p else word
+
+
 _db_lock = threading.Lock()
 _gemini_client = None
 
@@ -182,12 +223,29 @@ def init_db():
     con.close()
 
 
+def cache_key(word):
+    """The row a clip is stored under: the text that was actually *spoken*, not
+    the headword it was requested for.
+
+    These differ only when USE_PRON is on, and that is the point. Keying on the
+    headword alone lost the distinction: a clip synthesized from the raw
+    spelling and one synthesized from the dictionary's respelling landed in the
+    same row, so flipping USE_PRON appeared to do nothing (every cached word
+    kept returning the clip built under the old setting). Keying on the spoken
+    text gives each variant its own row.
+
+    With USE_PRON off this returns the headword unchanged, so every clip
+    already in audio.sqlite still matches — no migration needed.
+    """
+    return speech_text(word)
+
+
 def cache_get(word, key):
     col = SOURCES[key][0]
     con = sqlite3.connect(AUDIO_DB, timeout=30)
     try:
         row = con.execute(
-            f"SELECT {col} FROM audio_cache WHERE word=?", (word,)
+            f"SELECT {col} FROM audio_cache WHERE word=?", (cache_key(word),)
         ).fetchone()
         return row[0] if row and row[0] is not None else None
     finally:
@@ -202,7 +260,7 @@ def cache_put(word, key, mp3):
             con.execute(
                 f"INSERT INTO audio_cache(word,{col},created) VALUES (?,?,?) "
                 f"ON CONFLICT(word) DO UPDATE SET {col}=excluded.{col}, created=excluded.created",
-                (word, mp3, datetime.now(timezone.utc).isoformat()),
+                (cache_key(word), mp3, datetime.now(timezone.utc).isoformat()),
             )
             con.commit()
         finally:
@@ -260,15 +318,23 @@ def _gemini(word, voice_name):
             ),
         ),
     )
-    pcm = resp.candidates[0].content.parts[0].inline_data.data
+    # The model answers with text instead of audio often enough to matter (that
+    # is what GEMINI_PROMPT is for). Say so plainly rather than dying on an
+    # IndexError/AttributeError deep in the response object.
+    cand = (resp.candidates or [None])[0]
+    if cand is None or cand.content is None or not cand.content.parts:
+        raise RuntimeError(f"no audio returned (finish_reason={getattr(cand, 'finish_reason', None)})")
+    blob = cand.content.parts[0].inline_data
+    pcm = blob.data if blob is not None else None
     if not pcm:
-        raise RuntimeError("empty audio")
+        raise RuntimeError("no audio returned (the model replied with text)")
     return _pcm_to_mp3(pcm) if FFMPEG else _pcm_to_wav(pcm)
 
 
 def synth(word, key):
     """Synthesize one word to audio bytes with the engine for `key`."""
     _, engine, voice = SOURCES[key]
+    word = speech_text(word)
     if engine == "edge":
         return asyncio.run(_edge_stream(word, voice))
     if engine == "gtts":
@@ -447,10 +513,20 @@ MIC_DEVICE = os.environ.get("MIC_DEVICE", "") or read_key("MIC_DEVICE")
 _CAPTURE = {"win32": "dshow", "darwin": "avfoundation", "linux": "pulse"}.get(sys.platform, "")
 
 
-def list_audio_devices():
-    """Names of capture devices ffmpeg can see (Windows/dshow only, else [])."""
+_devices_cache = {"at": 0.0, "names": []}
+
+
+def list_audio_devices(max_age=300):
+    """Names of capture devices ffmpeg can see (Windows/dshow only, else []).
+
+    Cached: this spawns ffmpeg, which costs well over a second. /health calls it
+    on every request, and a client that gives up after a second then aborts the
+    response — which is exactly how the audio controls stayed switched off.
+    """
     if not FFMPEG or _CAPTURE != "dshow":
         return []
+    if time.time() - _devices_cache["at"] < max_age:
+        return _devices_cache["names"]
     out = subprocess.run([FFMPEG, "-hide_banner", "-list_devices", "true",
                           "-f", "dshow", "-i", "dummy"],
                          capture_output=True, text=True, errors="replace")
@@ -458,6 +534,8 @@ def list_audio_devices():
     for line in (out.stderr or "").splitlines():
         if line.rstrip().endswith('(audio)') and '"' in line:
             names.append(line.split('"')[1])
+    _devices_cache["at"] = time.time()
+    _devices_cache["names"] = names
     return names
 
 
@@ -490,8 +568,26 @@ def record_wav(seconds, device=None):
     return out.stdout, dev
 
 
+def is_wav16k_mono(data):
+    """True when `data` already is what every provider is *told* it is getting:
+    16 kHz, mono, 16-bit uncompressed PCM in a RIFF container.
+
+    Checking the magic bytes alone was not enough — a 44.1/48 kHz WAV sailed
+    through unconverted while stt_azure declared samplerate=16000 and stt_google
+    declared sampleRateHertz=16000, so the provider decoded it at the wrong rate
+    and transcribed noise."""
+    if data[:4] != b"RIFF":
+        return False
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            return (w.getnchannels() == 1 and w.getframerate() == 16000
+                    and w.getsampwidth() == 2 and w.getcomptype() == "NONE")
+    except Exception:
+        return False
+
+
 def transcribe(data, engine):
-    wav = data if data[:4] == b"RIFF" else to_wav16k(data)
+    wav = data if is_wav16k_mono(data) else to_wav16k(data)
     if engine == "gemini":
         return stt_gemini(wav)
     if engine == "azure":
@@ -506,6 +602,14 @@ def transcribe(data, engine):
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=HERE, **kw)
+
+    def handle_error(self, *a):
+        """A browser that navigates away mid-clip aborts the connection. That is
+        routine; printing a traceback for it only buries the real errors."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(*a)
 
     def log_message(self, fmt, *args):
         pass  # quiet; /speak activity is logged explicitly below
@@ -533,7 +637,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/record":
             return self.handle_record(parsed)
         if parsed.path == "/devices":
-            return self._json(200, {"devices": list_audio_devices(), "using": MIC_DEVICE or None})
+            return self._json(200, {"devices": list_audio_devices(max_age=0),
+                                    "using": MIC_DEVICE or None})
         return super().do_GET()
 
     def handle_speak(self, parsed):
@@ -547,7 +652,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not word:
             return self._json(400, {"error": "missing word"})
 
-        mp3 = cache_get(word, key)
+        refresh = q.get("refresh", ["0"])[0] not in ("0", "", "false")
+        mp3 = None if refresh else cache_get(word, key)
         origin = "cache"
         if mp3 is None:
             try:
@@ -765,6 +871,7 @@ def main():
     print(f"  speech-to-text:   {available_stt() or 'none — see API_ACCESS.md'}")
     print(f"  microphone (host): {'yes — ' + (MIC_DEVICE or (list_audio_devices() or ['none'])[0]) if mic_available() else 'no'}")
     print(f"  cache: {AUDIO_DB}")
+    list_audio_devices()          # warm, so the first /health is not a 2 s wait
     print("  Ctrl+C to stop.")
     serve_loopback()
 

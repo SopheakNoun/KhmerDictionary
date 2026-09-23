@@ -177,17 +177,25 @@ One key covers **TTS and STT**. Get it at <https://aistudio.google.com/apikey> a
 
 ### Quotas — read this before a bulk run
 
-The free tier is **10 TTS requests per day per project** (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`).
-Against 18,729 headwords × 2 voices = 37,458 clips, that is not a rate limit, it's a wall:
+The free tier is **100 TTS requests per day, counted per model**
+(`GenerateRequestsPerDayPerProjectPerModel`). Against 18,729 headwords × 2 voices = 37,458 clips,
+that is not a rate limit, it's a wall — roughly **375 days** to fill both Gemini columns:
 
 ```
 429 RESOURCE_EXHAUSTED … Quota exceeded for metric:
-generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10,
-model: gemini-2.5-flash-tts
+generativelanguage.googleapis.com/generate_requests_per_model_per_day, limit: 100,
+model: gemini-2.5-flash-tts        … retryDelay: 47747s (~13 h)
 ```
 
 Enable **billing** on the key's project to lift it. `generate_audio.py` recognises this error and
 stops the run immediately instead of retrying for hours.
+
+The cap is scoped **per model**, so a different TTS model id carries its own separate 100/day
+(`gemini-3.1-flash-tts-preview` is on this key too). That buys another 100 clips, not a solution —
+billing is the only way to fill these columns.
+
+> Verified 2026-09-23 against the live error and `models.list()`. An earlier version of this
+> section said 10/day via `generate_content_free_tier_requests`; that metric and figure are stale.
 
 ### TTS
 
@@ -226,7 +234,8 @@ permanent failure.
 ### STT
 
 Any audio-capable Gemini model; send the clip as an inline part with a transcription instruction.
-Default here is `gemini-3.5-flash` (`$env:GEMINI_STT_MODEL` to change). Older ids may be refused:
+Default here is `gemini-3.5-flash-lite` (`$env:GEMINI_STT_MODEL` to change) — a "lite" model
+answers a one-word clip in ~2 s where the full flash model took 10–23 s. Older ids may be refused:
 
 ```
 404 NOT_FOUND — This model models/gemini-2.5-flash is no longer available to new users.
@@ -236,7 +245,7 @@ List what your key can actually use with `client.models.list()`.
 
 ```python
 r = client.models.generate_content(
-    model="gemini-3.5-flash",
+    model="gemini-3.5-flash-lite",
     contents=[types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
               "Transcribe the Khmer speech in this audio. Reply with the Khmer text only."])
 print(r.text)
@@ -307,7 +316,7 @@ generator.
 | Symptom | Meaning |
 |---|---|
 | `429 (Too Many Requests) from TTS API` | gTTS: this IP is throttled by Google Translate. Wait hours, or use another network. |
-| `429 RESOURCE_EXHAUSTED … limit: 10` | Gemini free tier daily cap. Enable billing. |
+| `429 RESOURCE_EXHAUSTED … limit: 100` | Gemini free tier daily cap, per model. Enable billing. |
 | `400 … should only be used for TTS` | Gemini TTS got bare text with no instruction. Use the `Say clearly in Khmer: {word}` wrapper. |
 | `404 … no longer available to new users` | That Gemini model id is retired for new keys; pick one from `client.models.list()`. |
 | `finish_reason=OTHER`, no audio | Gemini hiccup — retry the same request. |
